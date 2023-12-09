@@ -10,7 +10,7 @@ def generate_gaussian_vectors(num_points, dimension):
     :return: A tensor of normalized Gaussian vectors with norm = 1.
     """
     # Generate random Gaussian vectors
-    gaussian_vectors = torch.randn(num_points, dimension)
+    gaussian_vectors = torch.tensor(torch.FloatTensor(num_points, dimension).uniform_(-1, 1))
     
     # Calculate the norms of the vectors
     norms = torch.norm(gaussian_vectors, dim=1)

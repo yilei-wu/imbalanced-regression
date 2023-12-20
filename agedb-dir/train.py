@@ -73,9 +73,9 @@ parser.add_argument('--interpolation_lambda', type=float, default=1.0, help='int
 
 # training/optimization related
 parser.add_argument('--dataset', type=str, default='agedb', choices=['imdb_wiki', 'agedb'], help='dataset name')
-parser.add_argument('--data_dir', type=str, default='./data', help='data directory')
+parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/data', help='data directory')
 parser.add_argument('--model', type=str, default='resnet50', help='model name')
-parser.add_argument('--store_root', type=str, default='checkpoint', help='root path for storing checkpoints, logs')
+parser.add_argument('--store_root', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/checkpoint', help='root path for storing checkpoints, logs')
 parser.add_argument('--store_name', type=str, default='', help='experiment store name')
 parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='optimizer type')
@@ -96,7 +96,7 @@ parser.add_argument('--pretrained', type=str, default='', help='checkpoint file 
 parser.add_argument('--evaluate', action='store_true', help='evaluate only flag')
 
 # ConR
-parser.add_argument('--conr', action='store_true', default=True, help='whether to enable conr')
+parser.add_argument('--conr', action='store_true', default=False, help='whether to enable conr')
 parser.add_argument('-w', type=float, default=1, help='similarity window for conR loss')
 parser.add_argument('--beta', type=float, default=4, help='conR loss coeff')
 parser.add_argument('-t', type=float, default=.2, help='temperature')
@@ -104,7 +104,7 @@ parser.add_argument('-e', type=float, default=0.01, help="coeff for eta in ConR"
 
 # DFR
 parser.add_argument('--dfr', action='store_true', default=False, help='whether to enable dfr')
-parser.add_argument('--dfr_model', type=str, default='transfomer', choices=['transformer', 'lstm'], help='dfr seq2seq model type')
+parser.add_argument('--dfr_model', type=str, default='mlp', choices=['transformer', 'lstm', 'mlp'], help='dfr seq2seq model type')
 parser.add_argument('--embedding_dim', type=int, default=2048, help='embedding dimension')
 parser.add_argument('--hidden_dim', type=int, default=2048, help='hidden dimension')
 parser.add_argument('--decoder_depth', type=int, default=1, help='decoder depth')
@@ -118,9 +118,14 @@ args.start_epoch, args.best_loss = 0, 1e5
 
 
 if len(args.store_name):
-    args.store_name = f'_{args.store_name}'
+    args.store_name = '_{}'.format(args.store_name)
+
 if not args.lds and args.reweight != 'none':
     args.store_name += f'_{args.reweight}'
+
+
+if args.dfr:
+    args.store_name += f'_DFR_{args.dfr_model}_{args.embedding_dim}_{args.hidden_dim}_{args.decoder_depth}'
 if args.conr:
     args.store_name += f'ConR_{args.beta}_w={args.w}'
 if args.lds:
@@ -136,11 +141,7 @@ if args.retrain_fc:
     args.store_name += f'_retrain_fc'
 if args.regularization_weight > 0:
     args.store_name += f'_reg{args.regularization_weight}_il{args.interpolation_lambda}'
-args.store_name = f"{args.dataset}_{args.model}{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
-
-timestamp = str(datetime.datetime.now())
-timestamp = '-'.join(timestamp.split(' '))
-args.store_name = args.store_name + '_' + timestamp
+args.store_name = f"{args.dataset}_{args.model}_{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
 
 prepare_folders(args)
 
@@ -169,8 +170,7 @@ def main():
     df_train, df_val, df_test = df[df['split'] == 'train'], df[df['split'] == 'val'], df[df['split'] == 'test']
     train_labels = df_train['age']
 
-    train_dataset = AgeDB(data_dir=args.data_dir, df=df_train, img_size=args.img_size, split='train',
-                          reweight=args.reweight, lds=args.lds, lds_kernel=args.lds_kernel, lds_ks=args.lds_ks, lds_sigma=args.lds_sigma)
+    train_dataset = AgeDB(data_dir=args.data_dir, df=df_train, img_size=args.img_size, split='train', reweight=args.reweight, lds=args.lds, lds_kernel=args.lds_kernel, lds_ks=args.lds_ks, lds_sigma=args.lds_sigma)
     val_dataset = AgeDB(data_dir=args.data_dir, df=df_val, img_size=args.img_size, split='val')
     test_dataset = AgeDB(data_dir=args.data_dir, df=df_test, img_size=args.img_size, split='test')
 
@@ -191,12 +191,14 @@ def main():
     
     model = torch.nn.DataParallel(model).cuda()
     if args.dfr:
-        if dfr.model == 'lstm':
-            seq2seq = nn.LSTM(input_size=args.embedding_dim, hidden_size=args.hidden_dim, num_layers=args.decoder_depth, batch_first=True)
-        elif dfr.model == 'transformer':
-            seq2seq = nn.ModuleList([
-                Block(dim=args.embedding_dim, num_heads=8, mlp_ratio=4., qkv_bias=True, qk_scale=None, norm_layer=nn.LayerNorm)
+        if args.dfr_model == 'lstm':
+            seq2seq = nn.LSTM(input_size=args.embedding_dim, hidden_size=args.hidden_dim, num_layers=args.decoder_depth, batch_first=True).cuda()
+        elif args.dfr_model == 'transformer':
+            seq2seq = nn.Sequential([
+                Block(dim=args.embedding_dim, num_heads=8, mlp_ratio=4., qkv_bias=True, qk_scale=None, norm_layer=nn.LayerNorm).cuda()
                 for i in range(args.decoder_depth)])
+        elif args.dfr_model == 'mlp':
+            seq2seq = nn.Sequential(*[nn.Linear(args.embedding_dim, args.hidden_dim) for i in range(args.decoder_depth)]).cuda()
         else:
             raise NotImplementedError(f"Model {dfr.model} not implemented")
 
@@ -218,8 +220,14 @@ def main():
 
     # Loss and optimizer
     if not args.retrain_fc:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
-            torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        if args.dfr:
+            model_parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
+            dfr_parameters = list(filter(lambda p: p.requires_grad, seq2seq.parameters()))
+            optimizer = torch.optim.AdamW([{'params': model_parameters, 'lr': args.lr}, {'params': dfr_parameters, 'lr': args.lr}], lr=args.lr) if args.optimizer == 'adam' else \
+                torch.optim.SGD([{'params': model_parameters, 'lr': args.lr}, {'params': dfr_parameters, 'lr': args.lr}], lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
+                torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     else:
         # optimize only the last linear layer
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
@@ -258,7 +266,7 @@ def main():
     for epoch in range(args.start_epoch, args.epoch):
         adjust_learning_rate(optimizer, epoch, args)
         if args.dfr:
-            train_loss_reg, train_loss_con, train_loss_uni, train_loss_smo = train_dfr(train_loader, model, optimizer, epoch,train_labels)
+            train_loss_reg, train_loss_con, train_loss_uni, train_loss_smo = train_dfr(train_loader, model, optimizer, epoch, train_labels, seq2seq)
         else:
             train_loss = train(train_loader, model, optimizer, epoch,train_labels)
         
@@ -309,7 +317,7 @@ def main():
                         test_loss_gmean,shot_dict['many']['gmean'],shot_dict['median']['gmean'],shot_dict['low']['gmean']]
             outputs.writerow(to_write)
 
-def train_dfr(train_loader, model, optimizer, epoch,train_labels):
+def train_dfr(train_loader, model, optimizer, epoch, label_range, seq2seq):
     # new train funtion for our method
     # so that it wont be affected by the original train function
     batch_time = AverageMeter('Time', ':6.2f')
@@ -319,10 +327,9 @@ def train_dfr(train_loader, model, optimizer, epoch,train_labels):
     losses_uni = AverageMeter(f'Loss Uni', ':.3f')
     losses_smo = AverageMeter(f'Loss Smo', ':.3f')
 
-
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses],
+        [batch_time, data_time, losses_reg, losses_con, losses_uni, losses_smo],
         prefix="Epoch: [{}]".format(epoch)
     )
 
@@ -330,29 +337,25 @@ def train_dfr(train_loader, model, optimizer, epoch,train_labels):
     end = time.time()
     preds, labels = [], []
     
-    for idx, (inputs,imgs, targets, weights) in enumerate(train_loader):
+    for idx, (inputs, imgs, targets, weights) in enumerate(train_loader):
         data_time.update(time.time() - end)
         inputs, targets, weights = \
             inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
 
-        imgs[0] = imgs[0].cuda(args.gpu, non_blocking=True)
-        imgs[1] = imgs[1].cuda(args.gpu, non_blocking=True)
-        imgs = torch.cat(( imgs[0],  imgs[1]), dim=0)
-        targets = torch.cat((targets,  targets), dim=0)
-        weights = torch.cat((weights,  weights), dim=0)
-
+        imgs = imgs.cuda(args.gpu, non_blocking=True)
         outputs, features = model(imgs, targets=targets, epoch=epoch,reg=False)
         outputs, features = model(inputs, targets, epoch)
 
-        loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs, targets, seq2seq=seq2seq)
+
+        loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs.squeeze(1), targets.squeeze(1).long(), range(121), seq2seq=seq2seq)
         
         losses_con.update(loss_con.item(), inputs[0].size(0))
         losses_reg.update(loss_reg.item(), inputs[0].size(0))
         losses_uni.update(loss_uni.item(), inputs[0].size(0))
         losses_smo.update(loss_smo.item(), inputs[0].size(0))
 
-        loss = loss_reg + loss_con + loss_uni + loss_smo
-        assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
+        loss = loss_reg + loss_con + loss_uni + loss_smo # mute con loss for now
+        # assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
 
         optimizer.zero_grad()
         loss.backward()

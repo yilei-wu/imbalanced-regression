@@ -121,7 +121,7 @@ def ConR(features,targets,preds,w=1,weights =1,t=0.2,e=0.01):
 
 def generate_gaussian_vectors(num_points, dimension):
     """
-    Generates random Gaussian vectors, filters out those with norms greater than 1, 
+    Generates random Gaussian vectors, filters out those with norms greater than 1,
     and then normalizes the remaining vectors to have a norm of 1.
 
     :param num_points: Number of points to generate.
@@ -129,46 +129,56 @@ def generate_gaussian_vectors(num_points, dimension):
     :return: A tensor of normalized Gaussian vectors with norm = 1.
     """
     # Generate random Gaussian vectors
+    torch.manual_seed(2024)
     gaussian_vectors = torch.randn(num_points, dimension)
-    
+
     # Calculate the norms of the vectors
-    norms = torch.norm(gaussian_vectors, dim=1)
+    norms = torch.norm(gaussian_vectors, dim=1, keepdim=True)
 
-    # Filter out vectors with norms greater than 1
-    filtered_vectors = gaussian_vectors[norms <= 1]
-
-    # Normalize the remaining vectors to have a norm of 1
-    norms_filtered = torch.norm(filtered_vectors, dim=1, keepdim=True)
-    normalized_vectors = filtered_vectors / norms_filtered
+    normalized_vectors = gaussian_vectors / norms
 
     return normalized_vectors
 
 def uniformity_loss(embeddings, num_points, epsilon):
-    print("Requires grad (embeddings):", embeddings.requires_grad)
+    # Generate the Gaussian vectors (assuming generate_gaussian_vectors is a valid function)
+    points = generate_gaussian_vectors(num_points, embeddings.shape[1]).to(embeddings.device)
 
-    # Generate the Gaussian vectors
-    points = generate_gaussian_vectors(num_points, embeddings.shape[1])
+    points = F.normalize(points, dim=1)
+    embeddings = F.normalize(embeddings, dim=1)
 
     # Calculate cosine similarity (dot product since vectors are normalized)
     cosine_similarity = torch.matmul(embeddings, points.T)
 
-    # Soft thresholding using sigmoid or another soft function
-    # The scale factor controls how sharp the transition is
-    scale_factor = 10  # You can adjust this value
-    soft_close_points = torch.sigmoid(scale_factor * (cosine_similarity - (1 - epsilon)))
+    # Finding the indices of the maximum values in each column
+    _, max_indices = torch.max(cosine_similarity, dim=0)
 
-    # Calculate the mean over the soft threshold values
-    # This retains a connection to the original embeddings tensor
-    percentage = torch.mean(soft_close_points) * 100
+    # Creating a mask of the same size as cosine_similarity
+    mask = torch.zeros_like(cosine_similarity, dtype=torch.bool)
 
-    print("Requires grad (percentage):", percentage.requires_grad)
-    return percentage
+    # Using the indices to set the maximum values in the mask
+    mask.scatter_(0, max_indices.unsqueeze(0), True)
 
-def smooth_loss(embeddings):
-    differences = embeddings[1:] - embeddings[:-1]
-    distances = torch.norm(differences, dim=1)
-    total_distance = torch.sum(distances) / (2 * (embeddings.size(0) - 1))
-    return total_distance
+    # Average the maximum cosine similarity values for each column
+    max_values = cosine_similarity[mask]
+    # print(max_values.shape)
+    average_max_similarity = torch.mean(max_values)
+
+    return 1 - average_max_similarity
+
+
+def smooth_loss(embeddings, alpha=1.0, beta=0.1):
+    # Calculating the smoothness term
+    diff = embeddings[1:] - embeddings[:-1]
+    lengths = torch.norm(diff, dim=1)
+
+    # Regularization term (optional)
+    regularization = torch.var(lengths)
+    length = torch.sum(lengths)
+
+    # Combined loss
+    loss = alpha * length + beta * regularization
+    return loss
+
 
 def disparity_loss(embeddings_A, labels_A, embeddings_B, labels_B):
     # Find matching embeddings in A for each label in B
@@ -181,3 +191,33 @@ def disparity_loss(embeddings_A, labels_A, embeddings_B, labels_B):
     normalized_total_distance = torch.sum(distances) / embeddings_B.size(0)
 
     return normalized_total_distance
+
+
+def regression_contrastive_loss(embeddings, labels, surrogates, temperature=0.1):
+    """
+    embeddings: Tensor of shape [N, d], where N is the number of samples, and d is the dimensionality of the embeddings
+    labels: Tensor of shape [N], where each element is an integer label corresponding to the index in surrogates
+    surrogates: Tensor of shape [C, d], where C is the number of classes
+    temperature: A temperature scaling parameter
+    """
+    N, d = embeddings.shape
+    C, _ = surrogates.shape
+
+    # Normalize embeddings and surrogates to unit vectors
+    embeddings_norm = F.normalize(embeddings, p=2, dim=1)
+    surrogates_norm = F.normalize(surrogates, p=2, dim=1)
+
+    # Compute dot product between embeddings and surrogates
+    similarities = torch.matmul(embeddings_norm, surrogates_norm.T) / temperature
+    
+    mask = torch.zeros_like(similarities).to(similarities.device)
+    mask[torch.arange(N), labels] = 1
+
+    # compute log_prob
+    exp_logits = torch.exp(similarities)
+    log_prob = similarities - torch.log(exp_logits.sum(1, keepdim=True))
+
+    # compute mean of log-likelihood over positive
+    mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+    loss = - mean_log_prob_pos.mean()
+    return loss

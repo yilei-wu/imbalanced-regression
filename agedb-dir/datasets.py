@@ -49,7 +49,9 @@ class AgeDB(data.Dataset):
         weight = np.asarray([self.weights[index]]).astype('float32') if self.weights is not None else np.asarray([np.float32(1.)])
         
         if self.split == 'train':
-            return transform(img), [transform(img),transform(img)], label, weight
+            # mute conR for now 
+            # return transform(img), [transform(img),transform(img)], label, weight
+            return transform(img), transform(img), label, weight
         else:
             return transform(img), label
         

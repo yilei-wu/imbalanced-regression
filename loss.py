@@ -10,17 +10,12 @@ def generate_gaussian_vectors(num_points, dimension):
     :return: A tensor of normalized Gaussian vectors with norm = 1.
     """
     # Generate random Gaussian vectors
-    gaussian_vectors = torch.tensor(torch.FloatTensor(num_points, dimension).uniform_(-1, 1))
+    gaussian_vectors = torch.randn(num_points, dimension)
     
     # Calculate the norms of the vectors
-    norms = torch.norm(gaussian_vectors, dim=1)
+    norms = torch.norm(gaussian_vectors, dim=1, keepdim=True)
 
-    # Filter out vectors with norms greater than 1
-    filtered_vectors = gaussian_vectors[norms <= 1]
-
-    # Normalize the remaining vectors to have a norm of 1
-    norms_filtered = torch.norm(filtered_vectors, dim=1, keepdim=True)
-    normalized_vectors = filtered_vectors / norms_filtered
+    normalized_vectors = gaussian_vectors / norms
 
     return normalized_vectors
 
@@ -56,3 +51,9 @@ def disparity_loss(embeddings_A, labels_A, embeddings_B, labels_B):
     normalized_total_distance = torch.sum(distances) / embeddings_B.size(0)
 
     return normalized_total_distance
+
+
+if __name__ == '__main__':
+    # test
+    points = generate_gaussian_vectors(10000, 512)
+    print(points.shape)

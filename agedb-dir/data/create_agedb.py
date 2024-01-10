@@ -1,3 +1,8 @@
+########################################################################################
+# Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
+# from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
+# by Yuzhe Yang et al.
+########################################################################################
 import os
 import argparse
 import pandas as pd
@@ -31,3 +36,15 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+"""
+age,path,split
+31,AgeDB/11706_OliviaHussey_31_f.jpg,train
+59,AgeDB/11684_MireilleDarc_59_f.jpg,val
+44,AgeDB/7955_GilbertRoland_44_m.jpg,train
+61,AgeDB/9352_GeorgesMarchal_61_m.jpg,val
+28,AgeDB/3888_TomasMilian_28_m.jpg,val
+8,AgeDB/16107_DannyGlover_8_m.jpg,test
+34,AgeDB/13784_ThelmaRitter_34_f.jpg,train
+74,AgeDB/9945_AliMacGraw_74_f.jpg,train
+"""

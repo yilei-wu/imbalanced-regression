@@ -1,16 +1,13 @@
-# Copyright (c) 2023-present, Royal Bank of Canada.
-# Copyright (c) 2021-present, Yuzhe Yang
+# Copyright (c) 2021-present, Royal Bank of Canada.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-#
 ########################################################################################
 # Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
 # from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
 # by Yuzhe Yang et al.
 ########################################################################################
-
 import math
 
 import numpy as np
@@ -228,7 +225,7 @@ class Bottleneck(nn.Module):
 class ResNet(nn.Module):
 
     def __init__(self, block, layers, fds, bucket_num, bucket_start, start_update, start_smooth,
-                 kernel, ks, sigma, momentum, dropout=None, return_features=False):
+                 kernel, ks, sigma, momentum, dropout=None, return_features=False, feature_dim=128):
         self.inplanes = 64
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -241,21 +238,22 @@ class ResNet(nn.Module):
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         self.avgpool = nn.AvgPool2d(7, stride=1)
         self.linear = nn.Linear(512 * block.expansion, 1)
+        
+        self.projector = nn.Linear(512 * block.expansion, feature_dim)
 
         if fds:
             self.FDS = FDS(
-                feature_dim=512 * block.expansion, bucket_num=bucket_num, bucket_start=bucket_start,
+                feature_dim=feature_dim, bucket_num=bucket_num, bucket_start=bucket_start,
                 start_update=start_update, start_smooth=start_smooth, kernel=kernel, ks=ks, sigma=sigma, momentum=momentum
             )
         self.fds = fds
         self.start_smooth = start_smooth
+        self.return_features = return_features
 
         self.use_dropout = True if dropout else False
         if self.use_dropout:
             print(f'Using dropout: {dropout}')
             self.dropout = nn.Dropout(p=dropout)
-        
-        self.return_features = return_features
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -281,7 +279,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x, targets=None, epoch=None,reg = True):
+    def forward(self, x, targets=None, epoch=None):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -294,17 +292,21 @@ class ResNet(nn.Module):
         x = self.avgpool(x)
         encoding = x.view(x.size(0), -1)
 
-        encoding_s = encoding
+        encoding_s = self.projector(encoding)
 
-        if self.training and self.fds and reg:
+        if self.training and self.fds:
             if epoch >= self.start_smooth:
                 encoding_s = self.FDS.smooth(encoding_s, targets, epoch)
 
-        if self.use_dropout:
-            encoding_s = self.dropout(encoding_s)
-        x = self.linear(encoding_s)
+        # if self.use_dropout:
+        #     encoding_s = self.dropout(encoding_s)
+        
+        x = self.linear(encoding)
 
-        return x, encoding
+        if self.training and (self.fds or self.return_features):
+            return x, encoding_s
+        else:
+            return x#, encoding
 
 
 def resnet50(**kwargs):

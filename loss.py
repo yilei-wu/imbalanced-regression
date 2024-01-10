@@ -32,7 +32,7 @@ def uniformity_loss(embeddings, num_points, epsilon):
     # Calculate percentage of embeddings with at least one point close enough
     percentage = torch.mean(close_points.float()) * 100
     
-    return percentage
+    return -percentage
 
 def smooth_loss(embeddings):
     differences = embeddings[1:] - embeddings[:-1]

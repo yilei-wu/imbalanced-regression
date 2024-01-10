@@ -1,10 +1,3 @@
-# Copyright (c) 2023-present, Royal Bank of Canada.
-# Copyright (c) 2021-present, Yuzhe Yang
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-#
 ########################################################################################
 # Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
 # from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
@@ -20,13 +13,12 @@ import torchvision.transforms as transforms
 
 from utils import get_lds_kernel_window
 
-
 print = logging.info
 
 
 class IMDBWIKI(data.Dataset):
     def __init__(self, df, data_dir, img_size, split='train', reweight='none',
-                 lds=False, lds_kernel='gaussian', lds_ks=5, lds_sigma=2,args=None):
+                 lds=False, lds_kernel='gaussian', lds_ks=5, lds_sigma=2):
         self.df = df
         self.data_dir = data_dir
         self.img_size = img_size
@@ -42,35 +34,27 @@ class IMDBWIKI(data.Dataset):
         row = self.df.iloc[index]
         img = Image.open(os.path.join(self.data_dir, row['path'])).convert('RGB')
         transform = self.get_transform()
-        
+        img = transform(img)
         label = np.asarray([row['age']]).astype('float32')
         weight = np.asarray([self.weights[index]]).astype('float32') if self.weights is not None else np.asarray([np.float32(1.)])
 
-        if self.split == 'train':
-            return transform(img), [transform(img),transform(img)], label, weight
-        else:
-            return transform(img), label
+        return img, label, weight
 
     def get_transform(self):
-        
-        reg_aug = transforms.Compose([
+        if self.split == 'train':
+            transform = transforms.Compose([
                 transforms.Resize((self.img_size, self.img_size)),
                 transforms.RandomCrop(self.img_size, padding=16),
                 transforms.RandomHorizontalFlip(),
                 transforms.ToTensor(),
                 transforms.Normalize([.5, .5, .5], [.5, .5, .5]),
-                    
-                ])
-        if self.split == 'train':
-            # transform['reg']=transforms.Compose(augmentation)
-            transform = reg_aug
+            ])
         else:
-            transform=transforms.Compose([
-                    transforms.Resize((self.img_size, self.img_size)),
-                    transforms.ToTensor(),
-                    transforms.Normalize([.5, .5, .5], [.5, .5, .5]),
-                    
-                ])
+            transform = transforms.Compose([
+                transforms.Resize((self.img_size, self.img_size)),
+                transforms.ToTensor(),
+                transforms.Normalize([.5, .5, .5], [.5, .5, .5]),
+            ])
         return transform
 
     def _prepare_weights(self, reweight, max_target=121, lds=False, lds_kernel='gaussian', lds_ks=5, lds_sigma=2):

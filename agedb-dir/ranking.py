@@ -3,8 +3,10 @@
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-#
-
+#######################################################################################################################
+# Code is based on the Blackbox Combinatorial Solvers (https://github.com/martius-lab/blackbox-backprop) implementation
+# from https://github.com/martius-lab/blackbox-backprop by Marin Vlastelica et al.
+#######################################################################################################################
 import torch
 
 

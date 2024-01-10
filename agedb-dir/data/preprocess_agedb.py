@@ -1,3 +1,8 @@
+########################################################################################
+# Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
+# from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
+# by Yuzhe Yang et al.
+########################################################################################
 from os.path import join
 import pandas as pd
 import matplotlib.pyplot as plt

@@ -1,17 +1,13 @@
-# Copyright (c) 2023-present, Royal Bank of Canada.
-# Copyright (c) 2021-present, Yuzhe Yang
+# Copyright (c) 2021-present, Royal Bank of Canada.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-#
 ########################################################################################
 # Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
 # from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
 # by Yuzhe Yang et al.
 ########################################################################################
-
-
 import time
 import argparse
 import logging
@@ -24,8 +20,6 @@ import datetime
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.utils.data import DataLoader
-from timm.models.vision_transformer import PatchEmbed, Block
-from tensorboard_logger import Logger
 
 from loss import *
 from utils import *
@@ -33,33 +27,32 @@ from datasets import AgeDB
 from resnet import resnet50
 
 from ranksim import batchwise_ranking_regularizer
-from dfr import dfr
+from dfr import Surrogate, dfr, generate_gaussian_vectors, dfr_simple
+import random
 
 import os
-import csv
-
 os.environ["KMP_WARNINGS"] = "FALSE"
 
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # imbalanced related
-
-
 # LDS
 parser.add_argument('--lds', action='store_true', default=False, help='whether to enable LDS')
-parser.add_argument('--lds_kernel', type=str, default='gaussian', choices=['gaussian', 'triang', 'laplace'], help='LDS kernel type')
+parser.add_argument('--lds_kernel', type=str, default='gaussian',
+                    choices=['gaussian', 'triang', 'laplace'], help='LDS kernel type')
 parser.add_argument('--lds_ks', type=int, default=9, help='LDS kernel size: should be odd number')
 parser.add_argument('--lds_sigma', type=float, default=1, help='LDS gaussian/laplace kernel sigma')
-
 # FDS
 parser.add_argument('--fds', action='store_true', default=False, help='whether to enable FDS')
-parser.add_argument('--fds_kernel', type=str, default='gaussian', choices=['gaussian', 'triang', 'laplace'], help='FDS kernel type')
+parser.add_argument('--fds_kernel', type=str, default='gaussian',
+                    choices=['gaussian', 'triang', 'laplace'], help='FDS kernel type')
 parser.add_argument('--fds_ks', type=int, default=9, help='FDS kernel size: should be odd number')
 parser.add_argument('--fds_sigma', type=float, default=1, help='FDS gaussian/laplace kernel sigma')
 parser.add_argument('--start_update', type=int, default=0, help='which epoch to start FDS updating')
-parser.add_argument('--start_smooth', type=int, default=1, help='which epoch to start using FDS to smooth features')
-parser.add_argument('--bucket_num', type=int, default=100, help='maximum bucket considered for FDS')
-parser.add_argument('--bucket_start', type=int, default=3, choices=[0, 3], help='minimum(starting) bucket for FDS, 0 for IMDBWIKI, 3 for AgeDB')
+parser.add_argument('--start_smooth', type=int, default=1000, help='which epoch to start using FDS to smooth features')
+parser.add_argument('--bucket_num', type=int, default=102, help='maximum bucket considered for FDS')
+parser.add_argument('--bucket_start', type=int, default=0, choices=[0, 3],
+                    help='minimum(starting) bucket for FDS, 0 for IMDBWIKI, 3 for AgeDB')
 parser.add_argument('--fds_mmt', type=float, default=0.9, help='FDS momentum')
 
 # re-weighting: SQRT_INV / INV
@@ -67,15 +60,15 @@ parser.add_argument('--reweight', type=str, default='none', choices=['none', 'sq
 # two-stage training: RRT
 parser.add_argument('--retrain_fc', action='store_true', default=False, help='whether to retrain last regression layer (regressor)')
 
-# RankSim
+# batchwise ranking regularizer
 parser.add_argument('--regularization_weight', type=float, default=0, help='weight of the regularization term')
 parser.add_argument('--interpolation_lambda', type=float, default=1.0, help='interpolation strength')
 
 # training/optimization related
 parser.add_argument('--dataset', type=str, default='agedb', choices=['imdb_wiki', 'agedb'], help='dataset name')
-parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/data', help='data directory')
+parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir-conR/data', help='data directory')
 parser.add_argument('--model', type=str, default='resnet50', help='model name')
-parser.add_argument('--store_root', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/checkpoint', help='root path for storing checkpoints, logs')
+parser.add_argument('--store_root', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/checkpoint_ht3', help='root path for storing checkpoints, logs')
 parser.add_argument('--store_name', type=str, default='', help='experiment store name')
 parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='optimizer type')
@@ -89,26 +82,35 @@ parser.add_argument('--batch_size', type=int, default=64, help='batch size')
 parser.add_argument('--print_freq', type=int, default=10, help='logging frequency')
 parser.add_argument('--img_size', type=int, default=224, help='image size used in training')
 parser.add_argument('--workers', type=int, default=32, help='number of workers used in data loading')
-
 # checkpoints
 parser.add_argument('--resume', type=str, default='', help='checkpoint file path to resume training')
 parser.add_argument('--pretrained', type=str, default='', help='checkpoint file path to load backbone weights')
 parser.add_argument('--evaluate', action='store_true', help='evaluate only flag')
 
-# ConR
-parser.add_argument('--conr', action='store_true', default=False, help='whether to enable conr')
-parser.add_argument('-w', type=float, default=1, help='similarity window for conR loss')
-parser.add_argument('--beta', type=float, default=4, help='conR loss coeff')
-parser.add_argument('-t', type=float, default=.2, help='temperature')
-parser.add_argument('-e', type=float, default=0.01, help="coeff for eta in ConR")
-
 # DFR
 parser.add_argument('--dfr', action='store_true', default=False, help='whether to enable dfr')
-parser.add_argument('--dfr_model', type=str, default='mlp', choices=['transformer', 'lstm', 'mlp'], help='dfr seq2seq model type')
-parser.add_argument('--embedding_dim', type=int, default=2048, help='embedding dimension')
-parser.add_argument('--hidden_dim', type=int, default=2048, help='hidden dimension')
-parser.add_argument('--decoder_depth', type=int, default=1, help='decoder depth')
+parser.add_argument('--dfr_simple', action='store_true', default=False, help='whether to use simplified dfr')
+parser.add_argument('--use_weight', action='store_true', default=False)
 
+parser.add_argument('--surrogate_contrast', action='store_true', default=False, help='whether to use surrogate')
+parser.add_argument('--surrogate_ranksim', action='store_true', default=False, help='whether to use surrogate')
+parser.add_argument('--unique_sampling', action='store_true', default=False, help='whether to use unique sampling')
+
+parser.add_argument('--dfr_model', type=str, default='mlp', choices=['transformer', 'lstm', 'mlp'], help='dfr seq2seq model type')
+parser.add_argument("--lr_seq2seq", type=float, default=1e-4, help="Learning rate for seq2seq")
+parser.add_argument('--embedding_dim', type=int, default=128, help='embedding dimension')
+parser.add_argument('--hidden_dim', type=int, default=128, help='hidden dimension')
+parser.add_argument('--decoder_depth', type=int, default=2, help='decoder depth')
+parser.add_argument("--momentum_dfr", type=float, default=0, help="momentum for surrogate")
+# useful hyper-parameter
+parser.add_argument("--temperature", type=float, default=0.3, help="temperature for surrogate")
+parser.add_argument("--loss_w1", type=float, default=1e1, help="weight for contrastive loss")
+parser.add_argument("--loss_w2", type=float, default=1e2, help="weight for uniformity loss")
+parser.add_argument("--loss_w3", type=float, default=1e-2, help="weight for smooth loss")
+parser.add_argument("--n", type=int, default=2000, help="number of uniformity points")
+
+parser.add_argument("--warmup", type=int, default=0, help="number of warmup epochs for surrogate")
+parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 parser.set_defaults(augment=True)
 args, unknown = parser.parse_known_args()
@@ -116,18 +118,15 @@ args, unknown = parser.parse_known_args()
 
 args.start_epoch, args.best_loss = 0, 1e5
 
-
 if len(args.store_name):
-    args.store_name = '_{}'.format(args.store_name)
+    args.store_name = f'_{args.store_name}'
+
+# dfr
+if args.dfr:
+    args.store_name += f'_DFR_{args.dfr_model}_{args.embedding_dim}_{args.lr_seq2seq}_{args.decoder_depth}_{args.warmup}_{args.loss_w1}_{args.loss_w2}_{args.loss_w3}_{args.momentum_dfr}_{args.temperature}_{args.n}_{"use_weight" if args.use_weight else ""}'
 
 if not args.lds and args.reweight != 'none':
     args.store_name += f'_{args.reweight}'
-
-
-if args.dfr:
-    args.store_name += f'_DFR_{args.dfr_model}_{args.embedding_dim}_{args.hidden_dim}_{args.decoder_depth}'
-if args.conr:
-    args.store_name += f'ConR_{args.beta}_w={args.w}'
 if args.lds:
     args.store_name += f'_lds_{args.lds_kernel[:3]}_{args.lds_ks}'
     if args.lds_kernel in ['gaussian', 'laplace']:
@@ -141,7 +140,11 @@ if args.retrain_fc:
     args.store_name += f'_retrain_fc'
 if args.regularization_weight > 0:
     args.store_name += f'_reg{args.regularization_weight}_il{args.interpolation_lambda}'
-args.store_name = f"{args.dataset}_{args.model}_{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
+args.store_name = f"{args.dataset}_{args.model}{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
+
+# timestamp = str(datetime.datetime.now())
+# timestamp = '-'.join(timestamp.split(' '))
+# args.store_name = args.store_name + '_' + timestamp
 
 prepare_folders(args)
 
@@ -157,7 +160,23 @@ print = logging.info
 print(f"Args: {args}")
 print(f"Store name: {args.store_name}")
 
-tb_logger = Logger(logdir=os.path.join(args.store_root, args.store_name), flush_secs=2)
+
+
+def seed_everything(seed):
+    # PyTorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # Numpy module.
+    random.seed(seed)  # Python random module.
+
+    # Ensure that the operations are deterministic on GPU (if using CUDA)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(True)
+
+# seed everything
+seed_everything(args.seed)
 
 def main():
     if args.gpu is not None:
@@ -170,14 +189,17 @@ def main():
     df_train, df_val, df_test = df[df['split'] == 'train'], df[df['split'] == 'val'], df[df['split'] == 'test']
     train_labels = df_train['age']
 
-    train_dataset = AgeDB(data_dir=args.data_dir, df=df_train, img_size=args.img_size, split='train', reweight=args.reweight, lds=args.lds, lds_kernel=args.lds_kernel, lds_ks=args.lds_ks, lds_sigma=args.lds_sigma)
+    train_dataset = AgeDB(data_dir=args.data_dir, df=df_train, img_size=args.img_size, split='train',
+                          reweight=args.reweight, lds=args.lds, lds_kernel=args.lds_kernel, lds_ks=args.lds_ks, lds_sigma=args.lds_sigma)
     val_dataset = AgeDB(data_dir=args.data_dir, df=df_val, img_size=args.img_size, split='val')
     test_dataset = AgeDB(data_dir=args.data_dir, df=df_test, img_size=args.img_size, split='test')
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True, drop_last=False)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,num_workers=args.workers, pin_memory=True, drop_last=False)
-    
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                              num_workers=args.workers, pin_memory=True, drop_last=False)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                            num_workers=args.workers, pin_memory=True, drop_last=False)
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
+                             num_workers=args.workers, pin_memory=True, drop_last=False)
     print(f"Training data size: {len(train_dataset)}")
     print(f"Validation data size: {len(val_dataset)}")
     print(f"Test data size: {len(test_dataset)}")
@@ -187,20 +209,28 @@ def main():
     model = resnet50(fds=args.fds, bucket_num=args.bucket_num, bucket_start=args.bucket_start,
                      start_update=args.start_update, start_smooth=args.start_smooth,
                      kernel=args.fds_kernel, ks=args.fds_ks, sigma=args.fds_sigma, momentum=args.fds_mmt,
-                     return_features=(args.regularization_weight > 0))
+                     return_features=(args.regularization_weight > 0 or args.dfr), feature_dim=args.embedding_dim)
     
     model = torch.nn.DataParallel(model).cuda()
+
     if args.dfr:
-        if args.dfr_model == 'lstm':
-            seq2seq = nn.LSTM(input_size=args.embedding_dim, hidden_size=args.hidden_dim, num_layers=args.decoder_depth, batch_first=True).cuda()
-        elif args.dfr_model == 'transformer':
-            seq2seq = nn.Sequential([
-                Block(dim=args.embedding_dim, num_heads=8, mlp_ratio=4., qkv_bias=True, qk_scale=None, norm_layer=nn.LayerNorm).cuda()
-                for i in range(args.decoder_depth)])
-        elif args.dfr_model == 'mlp':
-            seq2seq = nn.Sequential(*[nn.Linear(args.embedding_dim, args.hidden_dim) for i in range(args.decoder_depth)]).cuda()
+        if args.dfr_model == 'mlp':
+            if args.decoder_depth == 1:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim)).cuda()
+            elif args.decoder_depth == 2:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim)).cuda()
+            elif args.decoder_depth == 3:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim),).cuda()
         else:
             raise NotImplementedError(f"Model {dfr.model} not implemented")
+    else:
+        seq2seq = None
 
     # evaluate only
     if args.evaluate:
@@ -221,10 +251,16 @@ def main():
     # Loss and optimizer
     if not args.retrain_fc:
         if args.dfr:
-            model_parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-            dfr_parameters = list(filter(lambda p: p.requires_grad, seq2seq.parameters()))
-            optimizer = torch.optim.AdamW([{'params': model_parameters, 'lr': args.lr}, {'params': dfr_parameters, 'lr': args.lr}], lr=args.lr) if args.optimizer == 'adam' else \
-                torch.optim.SGD([{'params': model_parameters, 'lr': args.lr}, {'params': dfr_parameters, 'lr': args.lr}], lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+            if args.optimizer == 'adam':
+                    optimizer = torch.optim.Adam([
+                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
+                    {'params': model.parameters(), 'lr': args.lr}
+                ])
+            else:
+                optimizer = torch.optim.SGD([
+                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
+                    {'params': model.parameters(), 'lr': args.lr}
+                ], momentum=args.momentum, weight_decay=args.weight_decay)
         else:
             optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
                 torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
@@ -262,22 +298,26 @@ def main():
             print(f"===> No checkpoint found at '{args.resume}'")
 
     cudnn.benchmark = True
-
+    
+    # create surrogate
+    if args.dfr:
+        # surrogate = Surrogate(num_labels=102, feature_dim=args.embedding_dim, momentum=args.momentum_dfr).cuda()
+        surrogate = None
+        points = generate_gaussian_vectors(args.n, args.embedding_dim).cuda()
+    else:
+        surrogate = None
+        points = None
     for epoch in range(args.start_epoch, args.epoch):
         adjust_learning_rate(optimizer, epoch, args)
-        if args.dfr:
-            train_loss_reg, train_loss_con, train_loss_uni, train_loss_smo = train_dfr(train_loader, model, optimizer, epoch, train_labels, seq2seq)
-        else:
-            train_loss = train(train_loader, model, optimizer, epoch,train_labels)
-        
+        # if args.dfr:
+        train_loss, train_loss_uni, train_loss_con, train_loss_smo = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
+        # else:
+            # train_loss, _ = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
         val_loss_mse, val_loss_l1, val_loss_gmean = validate(val_loader, model, train_labels=train_labels)
 
-
         loss_metric = val_loss_mse if args.loss == 'mse' else val_loss_l1
-        # loss_metric = low_loss
-        is_best = loss_metric < args.best_loss    
+        is_best = (loss_metric < args.best_loss) and (epoch >= args.warmup)
         args.best_loss = min(loss_metric, args.best_loss)
-
         print(f"Best {'L1' if 'l1' in args.loss else 'MSE'} Loss: {args.best_loss:.3f}")
         save_checkpoint(args, {
             'epoch': epoch + 1,
@@ -286,141 +326,71 @@ def main():
             'state_dict': model.state_dict(),
             'optimizer': optimizer.state_dict(),
         }, is_best)
+        print(f"Epoch #{epoch}: Train loss [{train_loss:.4f}]; "
+              f"Val loss: MSE [{val_loss_mse:.4f}], L1 [{val_loss_l1:.4f}], G-Mean [{val_loss_gmean:.4f}]")
 
-        if args.dfr:
-            print(f"Epoch #{epoch}: Train loss [{train_loss_reg:.4f},{train_loss_con:.4f},{train_loss_uni:.4f},{train_loss_smo:.4f}]; "
-                f"Val loss: MSE [{val_loss_mse:.4f}], L1 [{val_loss_l1:.4f}], G-Mean [{val_loss_gmean:.4f}]")
-            tb_logger.log_value('train_loss_reg', train_loss_reg, epoch)
-            tb_logger.log_value('train_loss_con', train_loss_con, epoch)
-            tb_logger.log_value('train_loss_uni', train_loss_uni, epoch)
-            tb_logger.log_value('train_loss_smo', train_loss_smo, epoch)
-        else:
-            print(f"Epoch #{epoch}: Train loss [{train_loss:.4f}]; "
-                f"Val loss: MSE [{val_loss_mse:.4f}], L1 [{val_loss_l1:.4f}], G-Mean [{val_loss_gmean:.4f}]")
-            tb_logger.log_value('train_loss', train_loss, epoch)
     # test with best checkpoint
     print("=" * 120)
     print("Test best model on testset...")
     checkpoint = torch.load(f"{args.store_root}/{args.store_name}/ckpt.best.pth.tar")
     model.load_state_dict(checkpoint['state_dict'])
     print(f"Loaded best model, epoch {checkpoint['epoch']}, best val loss {checkpoint['best_loss']:.4f}")
-    test_loss_mse, test_loss_l1, test_loss_gmean,shot_dict = validate(test_loader, model, train_labels=train_labels, prefix='Test')
+    test_loss_mse, test_loss_l1, test_loss_gmean = validate(test_loader, model, train_labels=train_labels, prefix='Test')
     print(f"Test loss: MSE [{test_loss_mse:.4f}], L1 [{test_loss_l1:.4f}], G-Mean [{test_loss_gmean:.4f}]\nDone")
-    
-    
-    # Outputing to csv
-    with open('outputs.csv', mode='w') as outputs_file:
-            outputs = csv.writer(outputs_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
 
-            outputs.writerow(['All', 'Man', 'Med','Few','All', 'Man', 'Med','Few'])
-            to_write = [test_loss_l1,shot_dict['many']['l1'],shot_dict['median']['l1'],shot_dict['low']['l1'],
-                        test_loss_gmean,shot_dict['many']['gmean'],shot_dict['median']['gmean'],shot_dict['low']['gmean']]
-            outputs.writerow(to_write)
 
-def train_dfr(train_loader, model, optimizer, epoch, label_range, seq2seq):
-    # new train funtion for our method
-    # so that it wont be affected by the original train function
+def train(train_loader, model, optimizer, epoch, surrogate=None, seq2seq=None, points=None):
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.4f')
-    losses_reg = AverageMeter(f'Loss Reg', ':.3f')
-    losses_con = AverageMeter(f'Loss Con', ':.3f')
-    losses_uni = AverageMeter(f'Loss Uni', ':.3f')
-    losses_smo = AverageMeter(f'Loss Smo', ':.3f')
-
+    losses = AverageMeter(f'Loss ({args.loss.upper()})', ':.3f')
+    losses_uni = AverageMeter('Loss (Uniformity)', ':.3f')
+    losses_con = AverageMeter('Loss (Contrastive)', ':.3f')
+    losses_smo = AverageMeter('Loss (Smooth)', ':.3f')
     progress = ProgressMeter(
         len(train_loader),
-        [batch_time, data_time, losses_reg, losses_con, losses_uni, losses_smo],
+        [batch_time, data_time, losses, losses_uni, losses_con, losses_smo],
         prefix="Epoch: [{}]".format(epoch)
     )
 
     model.train()
     end = time.time()
-    preds, labels = [], []
-    
-    for idx, (inputs, imgs, targets, weights) in enumerate(train_loader):
+
+    # if surrogate is not None:
+    #     surrogate.momentum = min(epoch / args.epoch, 0.6)
+    # print(f"The momentum of surrogate is {surrogate.momentum}")
+
+    for idx, (inputs, targets, weights) in enumerate(train_loader):
         data_time.update(time.time() - end)
-        inputs, targets, weights = \
-            inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
+        inputs, targets, weights = inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
 
-        imgs = imgs.cuda(args.gpu, non_blocking=True)
-        outputs, features = model(imgs, targets=targets, epoch=epoch,reg=False)
-        outputs, features = model(inputs, targets, epoch)
+        if args.regularization_weight > 0 or args.dfr:
+            outputs, features = model(inputs, targets, epoch)
+        elif args.fds:
+            outputs, _ = model(inputs, targets, epoch)
+        else:
+            outputs = model(inputs, targets, epoch)
 
-
-        loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs.squeeze(1), targets.squeeze(1).long(), range(121), seq2seq=seq2seq)
-        
-        losses_con.update(loss_con.item(), inputs[0].size(0))
-        losses_reg.update(loss_reg.item(), inputs[0].size(0))
-        losses_uni.update(loss_uni.item(), inputs[0].size(0))
-        losses_smo.update(loss_smo.item(), inputs[0].size(0))
-
-        loss = loss_reg + loss_con + loss_uni + loss_smo # mute con loss for now
-        # assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        batch_time.update(time.time() - end)
-        end = time.time()
-        if idx % args.print_freq == 0:
-            progress.display(idx)
-            
-    return losses_reg.avg, losses_con.avg, losses_uni.avg, losses_smo.avg
-
-
-def train(train_loader, model, optimizer, epoch,train_labels):
-    batch_time = AverageMeter('Time', ':6.2f')
-    data_time = AverageMeter('Data', ':6.4f')
-    losses = AverageMeter(f'Loss ({args.loss.upper()})', ':.3f')
-    
-    if args.conr:
-        loss_c = AverageMeter("Loss(ConR)", ":.3f")
-        progress = ProgressMeter(
-            len(train_loader),
-            [batch_time, data_time, losses,loss_c],
-            prefix="Epoch: [{}]".format(epoch)
-        )
-    else:
-        progress = ProgressMeter(
-            len(train_loader),
-            [batch_time, data_time, losses],
-            prefix="Epoch: [{}]".format(epoch)
-        )
-
-    model.train()
-    end = time.time()
-    preds, labels = [], []
-    
-    for idx, (inputs,imgs_c, targets, weights) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-        inputs, targets, weights = \
-            inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
-
-        imgs_c[0] = imgs_c[0].cuda(args.gpu, non_blocking=True)
-        imgs_c[1] = imgs_c[1].cuda(args.gpu, non_blocking=True)
-        imgs_c = torch.cat(( imgs_c[0],  imgs_c[1]), dim=0)
-        targets_c = torch.cat(( targets,  targets), dim=0)
-        weights_c = torch.cat(( weights,  weights), dim=0)
-
-        outputs_c, features_c = model(imgs_c, targets=targets_c, epoch=epoch,reg=False)
-        outputs, features = model(inputs, targets, epoch)
-   
         loss = globals()[f"weighted_{args.loss}_loss"](outputs, targets, weights)
-        
-        if args.conr:
-            l_c= ConR(features_c,targets_c,outputs_c.clone().detach(),w=args.w,weights =weights_c,t=args.t,e=args.e)
-            loss+=args.beta*l_c
-            loss_c.update(l_c.item(), inputs[0].size(0))
-      
+        losses.update(loss.item(), inputs.size(0))
+
+        # ranksim regularization
         if args.regularization_weight > 0:
             loss += (args.regularization_weight * batchwise_ranking_regularizer(features, targets, 
                 args.interpolation_lambda))
 
-        assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
+        if args.dfr and epoch >= args.warmup:
+            # loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs.squeeze(1), targets.squeeze(1).long(), range(102), seq2seq, surrogate, points, args.temperature)
+            # if args.dfr_simple:
+            #     loss_reg, loss_con, loss_uni, loss_smo = dfr_simple2(features, targets.squeeze(1).long(), points, range(102), model.module.FDS.running_mean_last_epoch, args.temperature)
+            # else:
+            loss_reg, loss_con, loss_uni, loss_smo = dfr_simple(features, targets.squeeze(1).long(), points, range(102), model.module.FDS.running_mean_last_epoch, args.temperature, args.use_weight, args.surrogate_contrast, args.surrogate_ranksim)
+            loss += (args.loss_w1 * loss_con + args.loss_w2 * loss_uni + args.loss_w3 * loss_smo)
 
-        losses.update(loss.item(), inputs.size(0))
-        
+            losses_uni.update(loss_uni.item(), inputs.size(0))
+            losses_con.update(loss_con.item(), inputs.size(0))
+            losses_smo.update(loss_smo.item(), inputs.size(0))
+
+        assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
 
         optimizer.zero_grad()
         loss.backward()
@@ -430,12 +400,12 @@ def train(train_loader, model, optimizer, epoch,train_labels):
         end = time.time()
         if idx % args.print_freq == 0:
             progress.display(idx)
-            
+
     if args.fds and epoch >= args.start_update:
         print(f"Create Epoch [{epoch}] features of all training data...")
         encodings, labels = [], []
         with torch.no_grad():
-            for (inputs,_, targets, _) in tqdm(train_loader):
+            for (inputs, targets, _) in tqdm(train_loader):
                 inputs = inputs.cuda(non_blocking=True)
                 outputs, feature = model(inputs, targets, epoch)
                 encodings.extend(feature.data.squeeze().cpu().numpy())
@@ -445,7 +415,7 @@ def train(train_loader, model, optimizer, epoch,train_labels):
         model.module.FDS.update_last_epoch_stats(epoch)
         model.module.FDS.update_running_stats(encodings, labels, epoch)
 
-    return losses.avg
+    return losses.avg, losses_uni.avg, losses_con.avg, losses_smo.avg
 
 
 def validate(val_loader, model, train_labels=None, prefix='Val'):
@@ -465,20 +435,11 @@ def validate(val_loader, model, train_labels=None, prefix='Val'):
     model.eval()
     losses_all = []
     preds, labels = [], []
-    f=[]
-
     with torch.no_grad():
         end = time.time()
-        pred_dict ={}
-        for idx, (inputs, targets) in enumerate(val_loader):
+        for idx, (inputs, targets, _) in enumerate(val_loader):
             inputs, targets = inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True)
-
-            if args.evaluate:
-                outputs,features = model(inputs)
-                f.extend(features.data.cpu().numpy())
-
-            else:
-                outputs,_ = model(inputs)
+            outputs = model(inputs)
 
             preds.extend(outputs.data.cpu().numpy())
             labels.extend(targets.data.cpu().numpy())
@@ -495,7 +456,7 @@ def validate(val_loader, model, train_labels=None, prefix='Val'):
             end = time.time()
             if idx % args.print_freq == 0:
                 progress.display(idx)
-        
+
         shot_dict = shot_metrics(np.hstack(preds), np.hstack(labels), train_labels)
         loss_gmean = gmean(np.hstack(losses_all), axis=None).astype(float)
         print(f" * Overall: MSE {losses_mse.avg:.3f}\tL1 {losses_l1.avg:.3f}\tG-Mean {loss_gmean:.3f}")

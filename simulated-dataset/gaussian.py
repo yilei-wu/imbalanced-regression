@@ -153,19 +153,13 @@ def regression_contrastive_loss(embeddings, labels, surrogates, temperature=0.1)
 
     # Compute dot product between embeddings and surrogates
     similarities = torch.matmul(embeddings_norm, surrogates_norm.T) 
-    print(torch.max(similarities.view(-1)), torch.min(similarities.view(-1)))    
+    # print(torch.max(similarities.view(-1)), torch.min(similarities.view(-1)))    
     similarities /= temperature
 
     mask = torch.zeros_like(similarities).to(similarities.device)
     mask[torch.arange(N), labels] = 1
 
     # compute log_prob
-    # exp_logits = torch.exp(similarities)
-    # log_prob = similarities - torch.log(exp_logits.sum(1, keepdim=True))
-
-    # # compute mean of log-likelihood over positive
-    # mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
-    # loss = - mean_log_prob_pos.mean()
     p = mask / mask.sum(1, keepdim=True).clamp(min=1.0)
 
     logits_max, _ = torch.max(similarities, dim=-1, keepdim=True)
@@ -186,7 +180,7 @@ def get_centroid(features, labels):
     unique_labels = torch.unique(labels)
     # sort the unique labels
     unique_labels, _ = torch.sort(unique_labels)
-
+    # print("unique_labels:", unique_labels)
     centroids = torch.zeros(len(unique_labels), features.size(1)).to(features.device)
     centroids = centroids.clone()  # Add this line before the loop
     for i, label in enumerate(unique_labels):
@@ -208,16 +202,13 @@ def complete_centroid(centroids, centroids_label, label_range):
     # Create a tensor of zeros with the size [L, D]
     complete_centroids = torch.zeros(L, D, device=device)
 
+    # Scatter centroids into complete_centroids using centroids_label indices
     # Use advanced indexing to update complete_centroids
-    # This operation maintains the gradient flow from centroids
-    complete_centroids = complete_centroids.scatter_(0, centroids_label.unsqueeze(1).expand(-1, D), centroids)
-
-    # Convert to nn.Parameter to include in the model's parameters
-    # complete_centroids = nn.Parameter(complete_centroids)
+    complete_centroids.scatter_(0, centroids_label.unsqueeze(1).expand(-1, D), centroids)
 
     return complete_centroids
 
-def dfr(features, preds, labels, label_range, seq2seq, Surrogate):
+def dfr(features, preds, labels, label_range, seq2seq, Surrogate, temperature=0.1, n=1000):
     # features: [N, D]
     # preds: [N]
     # labels: [N]
@@ -226,26 +217,27 @@ def dfr(features, preds, labels, label_range, seq2seq, Surrogate):
 
     features = F.normalize(features, dim=1)
     centroids, centroids_label = get_centroid(features, labels) # lebels or preds
+    # print("label_range:", torch.tensor(label_range))
     centroids = complete_centroid(centroids, centroids_label, torch.tensor(label_range))
 
-    # plain trasnfomer
     # update the surrogate where centroids are not zero
     surrogate = Surrogate.get().to(features.device)
     if torch.sum(centroids) != 0:
         surrogate[centroids_label] = centroids[centroids_label].detach()
 
-    surrogate = seq2seq(nn.Parameter(surrogate.unsqueeze(0)))
+    # surrogate = seq2seq(nn.Parameter(surrogate.unsqueeze(0)))
+    surrogate = F.normalize(surrogate, dim=1)  
+    surrogate = seq2seq(surrogate.unsqueeze(0))
+
     if isinstance(surrogate, tuple):
         surrogate = surrogate[0]
     surrogate = surrogate.squeeze(0) # [L, D]
     Surrogate.update(surrogate.cpu())
 
     # calcuate the loss
-    loss_reg = F.l1_loss(preds, labels)
-
-    loss_con = regression_contrastive_loss(features, labels, surrogate.clone().detach(), temperature=0.1)
-    # loss_con = F.l1_loss(centroids[centroids_label], surrogate[centroids_label].detach())
-    loss_uni = uniformity_loss(surrogate, 100, 0.1)
+    loss_reg = F.l1_loss(preds.squeeze(), labels)
+    loss_con = regression_contrastive_loss(features, labels, surrogate.clone().detach(), temperature=temperature)
+    loss_uni = uniformity_loss(surrogate, num_points=n, epsilon=0.1)
     loss_smo = smooth_loss(surrogate)
 
     return loss_reg, loss_con, loss_uni, loss_smo
@@ -260,18 +252,24 @@ def init_features(num_labels, num_samples, input_dim=10, std_dev_feature=10, few
         # Sample labels based on a chi-square distribution, then map to label range
         chi_samples = np.random.chisquare(df, num_samples)
         train_labels = np.floor(chi_samples / chi_samples.max() * num_labels).astype(int)
+        # clamp the labels to the range numpay array
+        train_labels = np.clip(train_labels, 0, num_labels - 1)
     elif train_dist == 'dfr':
-        # uniform sampel with range missing, no traing sample from 10-15, 30-35
         train_labels = np.random.choice(np.arange(0, 10).tolist() + np.arange(20, 30).tolist() + np.arange(40, 50).tolist(), num_samples)
+    elif train_dist == 'dfr-ex':
+        train_labels = np.random.choice(np.arange(10, 40).tolist(), num_samples)
     else:
         # Normal distribution with imbalanced label occurrence
         mean = num_labels / 2
-        std_dev = num_labels / 4
-        train_labels = np.random.normal(mean, std_dev, num_samples)
-        train_labels = np.clip(train_labels, 0, num_labels - 1).astype(int)
+        std_dev = df
+        samples_in_range = []
+        while len(samples_in_range) < num_samples:
+            sample = np.random.normal(mean, std_dev)
+            if 0 <= sample <= num_labels - 1:
+                samples_in_range.append(sample)
+        train_labels = np.floor(np.random.choice(samples_in_range, num_samples)).astype(int)
 
     train_labels = torch.tensor(train_labels).long()
-    train_labels.clamp_(0, num_labels - 1)
 
     # Generating balanced label samples for testing
     test_labels = torch.tensor(np.repeat(np.arange(num_labels), num_samples / num_labels)).long()
@@ -350,7 +348,7 @@ def train(args):
     loss_smo_history = []
     loss_reg_history = []
 
-    surrogate = Surrogate(args.num_labels, args.feature_dim, momentum=0.9)
+    surrogate = Surrogate(args.num_labels, args.feature_dim, momentum=args.momentum)
 
     for step in range(args.num_iterations):
         features_list = []
@@ -359,19 +357,16 @@ def train(args):
         for inputs_batch, labels_batch in dataloader:
             optimizer.zero_grad()
             features = encoder(inputs_batch)
-            # features = F.normalize(features, dim=1)
             preds = regressor(features).squeeze()
             loss_reg, loss_con, loss_uni, loss_smo = dfr(F.normalize(features, dim=1), preds, labels_batch, range(args.num_labels), seq2seq, surrogate)
             if args.use_reg:
                 total_loss = loss_reg
             if args.use_con and step > args.warmup:
                 total_loss += loss_con
-                # pass
             if args.use_uni and step > args.warmup:
                 total_loss += loss_uni
             if args.use_smo and step > args.warmup:
                 total_loss += loss_smo
-                # pass
                 
             loss_con_history.append(loss_con.item())
             loss_uni_history.append(loss_uni.item())
@@ -486,14 +481,6 @@ def train(args):
             ax1.set_xticks([-1, 0, 1])
             ax1.set_yticks([-1, 0, 1])
 
-            # 获取子图的位置和大小
-            # bbox = ax1.get_position()
-            # width, height = bbox.width, bbox.height
-            # left, bottom = bbox.x0 + width / 2 - width / 8, bbox.y0 + height / 2 - height / 8
-
-            # # 设置极坐标图的位置和大小
-            # polar_width, polar_height = width / 4, height / 4  # 极坐标图为子图大小的一半
-
             # # 添加极坐标图
             ax_polar = axes[count+10]
             # ax_polar = fig.add_axes([left, bottom, polar_width, polar_height], polar=True)
@@ -542,8 +529,6 @@ def train(args):
     plt.savefig(args.path_to_save_figures + "2.png")
     plt.close()
 
-    # Assuming inputs_te, labels_te, regressor, encoder, labels_tr are defined and the model is trained
-    # Calculate MAE for each label in the test set and Save the Figure
     all_labels = torch.unique(torch.cat([labels_te, labels]))
     max_label = all_labels.max().item()
     label_counts_te = torch.zeros(max_label + 1)
@@ -597,9 +582,9 @@ def run_simulation(args):
     transform_func_dict = {"5x+3" : lambda x: 5* x.float() + 3 , "0.3x+5": lambda x: 0.3* x.float() + 5, "0.4x^2" : lambda x: 0.4 * (x.float() ** 2), "logx" : lambda x: torch.log(x.float() + 1)}
     func = args.transform_func
     args.transform_func = transform_func_dict[func]
-    args.scalar = args.scalar
-    args.df = args.df
-    args.warmup = args.warmup
+    # args.scalar = args.scalar
+    # args.df = args.df
+    # args.warmup = args.warmup
     seed = args.seed
     train_dist = args.train_dist
 
@@ -611,34 +596,37 @@ def run_simulation(args):
     else:
         args.use_reg = True; args.use_con = True;  args.use_uni = True;  args.use_smo = True
     
-    transform_func = transform_func_dict[func]
-    combination = f"func-{func}-seed-{seed}-dist-{train_dist}-{baseline}-batch-{batch_size}-std_dev_feature-{std_dev_feature}-{args.seq2seq if not baseline else ''}"
+    # transform_func = transform_func_dict[func]
+    combination = f"func-{func}-seed-{seed}-dist-{train_dist}-{baseline}-batch-{batch_size}-std_dev_feature-{std_dev_feature}-df-{args.df}-{args.seq2seq if not baseline else ''}"
     args.path_to_save_figures = f"/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/simulated-dataset/{args.savepath}/{combination}/"
     mae, mse = train(args)
     with open(f"/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/simulated-dataset/{args.savepath}/result.csv", "a") as f:
         f.write(f"{baseline}, {batch_size}, {args.seq2seq}, {train_dist}, {seed}, {std_dev_feature}, {func}, {mae}, {mse}\n")
 
-
 if __name__ == "__main__":
+    from datetime import datetime
+    current_date = datetime.now()
+    formatted_date = current_date.strftime("%B-%d")
     import argparse
     parser = argparse.ArgumentParser(description="Run simulations with various configurations")
     parser.add_argument("--input_dim", type=int, default=20, help="Input dimension")
     parser.add_argument("--feature_dim", type=int, default=10, help="Feature dimension")
     parser.add_argument("--num_labels", type=int, default=50, help="Number of labels")
     parser.add_argument("--num_samples", type=int, default=2000, help="Number of samples")
-    parser.add_argument("--num_iterations", type=int, default=801, help="Number of iterations")
-    parser.add_argument("--n", type=int, default=100, help="Interval for visualization")
-    parser.add_argument("--scalar", type=int, default=3, help="Scalar value")
-    parser.add_argument("--df", type=int, default=4, help="Degrees of freedom")
+    parser.add_argument("--num_iterations", type=int, default=8001, help="Number of iterations")
+    parser.add_argument("--n", type=int, default=1000, help="Interval for visualization")
+    parser.add_argument("--scalar", type=int, default=3, help="Scalar value") # useless
+    parser.add_argument("--df", type=int, default=4, help="Degrees of freedom/standard deviation")
     parser.add_argument("--warmup", type=int, default=0, help="Warmup period")
     parser.add_argument("--batch_size", default=1000, type=int, choices=[1000, 500, 200, 100, 50], help="List of batch sizes")
     parser.add_argument("--std_dev_feature", type=float, default=0.1, choices=[0.1, 1.0])
     parser.add_argument("--seed", type=int, default=2024, help="Random seed")
-    parser.add_argument("--train_dist", type=str, default="normal", choices=["normal", "chi-square", 'dfr'], help="Distribution of training labels")
+    parser.add_argument("--train_dist", type=str, default="normal", choices=["normal", "chi-square", 'dfr', 'dfr-ex'], help="Distribution of training labels")
     parser.add_argument("--transform_func", type=str, default="5x+3", choices=["5x+3", "0.3x+5", "0.4x^2", "logx"], help="Transformation function")
     parser.add_argument("--baseline", action="store_true", default=False, help="Whether to run baseline")
     parser.add_argument("--seq2seq", type=str, default="mlp", choices=["mlp", "lstm", "vit"], help="seq2seq model")
-    parser.add_argument("--visualizaion", type=str, default="pca", choices=["pca", "tsne", 'uni'], help="Visualization method")
-    parser.add_argument("--savepath", type=str, required=True, help="save path")
+    parser.add_argument("--visualizaion", type=str, default="uni", choices=["pca", "tsne", 'uni'], help="Visualization method")
+    parser.add_argument("--savepath", type=str, help="save path", default=formatted_date) # date 
+    parser.add_argument("--momentum", type=float, default=0.9, help="momentum for surrogate")
     args = parser.parse_args()
     run_simulation(args)

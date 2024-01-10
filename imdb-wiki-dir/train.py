@@ -1,16 +1,13 @@
-# Copyright (c) 2023-present, Royal Bank of Canada.
-# Copyright (c) 2021-present, Yuzhe Yang
+# Copyright (c) 2021-present, Royal Bank of Canada.
 # All rights reserved.
 #
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-#
 ########################################################################################
 # Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
 # from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
 # by Yuzhe Yang et al.
 ########################################################################################
-
 import time
 import argparse
 import logging
@@ -27,12 +24,17 @@ from torch.utils.data import DataLoader
 from loss import *
 from utils import *
 from resnet import resnet50
+
+from ranksim import batchwise_ranking_regularizer
+from dfr import Surrogate, dfr, generate_gaussian_vectors, dfr_simple
+import random
 from datasets import IMDBWIKI
 
 import os
 os.environ["KMP_WARNINGS"] = "FALSE"
 
 from ranksim import batchwise_ranking_regularizer
+from dfr import Surrogate, dfr
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # imbalanced related
@@ -49,8 +51,8 @@ parser.add_argument('--fds_kernel', type=str, default='gaussian',
 parser.add_argument('--fds_ks', type=int, default=5, help='FDS kernel size: should be odd number')
 parser.add_argument('--fds_sigma', type=float, default=1, help='FDS gaussian/laplace kernel sigma')
 parser.add_argument('--start_update', type=int, default=0, help='which epoch to start FDS updating')
-parser.add_argument('--start_smooth', type=int, default=1, help='which epoch to start using FDS to smooth features')
-parser.add_argument('--bucket_num', type=int, default=100, help='maximum bucket considered for FDS')
+parser.add_argument('--start_smooth', type=int, default=1000, help='which epoch to start using FDS to smooth features')
+parser.add_argument('--bucket_num', type=int, default=187, help='maximum bucket considered for FDS')
 parser.add_argument('--bucket_start', type=int, default=0, choices=[0, 3],
                     help='minimum(starting) bucket for FDS, 0 for IMDBWIKI, 3 for AgeDB')
 parser.add_argument('--fds_mmt', type=float, default=0.9, help='FDS momentum')
@@ -66,63 +68,82 @@ parser.add_argument('--interpolation_lambda', type=float, default=1.0, help='int
 
 # training/optimization related
 parser.add_argument('--dataset', type=str, default='imdb_wiki', choices=['imdb_wiki', 'agedb'], help='dataset name')
-parser.add_argument('--data_dir', type=str, default='/shared-data/imdb-wiki-dir/', help='data directory')
+parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/MYOP/trial_1/data', help='data directory')
 parser.add_argument('--model', type=str, default='resnet50', help='model name')
 parser.add_argument('--store_root', type=str, default='checkpoint', help='root path for storing checkpoints, logs')
 parser.add_argument('--store_name', type=str, default='', help='experiment store name')
 parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='optimizer type')
 parser.add_argument('--loss', type=str, default='l1', choices=['mse', 'l1', 'focal_l1', 'focal_mse', 'huber'], help='training loss type')
-parser.add_argument('--lr', type=float, default=1e-3, help='initial learning rate')
+parser.add_argument('--lr', type=float, default=1e-4, help='initial learning rate')
 parser.add_argument('--epoch', type=int, default=90, help='number of epochs to train')
 parser.add_argument('--momentum', type=float, default=0.9, help='optimizer momentum')
 parser.add_argument('--weight_decay', type=float, default=1e-4, help='optimizer weight decay')
 parser.add_argument('--schedule', type=int, nargs='*', default=[60, 80], help='lr schedule (when to drop lr by 10x)')
-parser.add_argument('--batch_size', type=int, default=256, help='batch size')
+parser.add_argument('--batch_size', type=int, default=64, help='batch size')
 parser.add_argument('--print_freq', type=int, default=10, help='logging frequency')
 parser.add_argument('--img_size', type=int, default=224, help='image size used in training')
 parser.add_argument('--workers', type=int, default=32, help='number of workers used in data loading')
-
-
 # checkpoints
 parser.add_argument('--resume', type=str, default='', help='checkpoint file path to resume training')
 parser.add_argument('--pretrained', type=str, default='', help='checkpoint file path to load backbone weights')
 parser.add_argument('--evaluate', action='store_true', help='evaluate only flag')
 
-# ConR
-parser.add_argument('--conr', action='store_true', default=False, help='whether to enable conr')
-parser.add_argument('-w', type=float, default=1, help='similarity window for conR loss')
-parser.add_argument('--beta', type=float, default=4, help='conR loss coeff')
-parser.add_argument('-t', type=float, default=.07, help='temperature')
-parser.add_argument('-e', type=float, default=0.01, help="coeff for eta in ConR")
+# DFR
+parser.add_argument('--dfr', action='store_true', default=False, help='whether to enable dfr')
+parser.add_argument('--dfr_simple', action='store_true', default=False, help='whether to use simplified dfr')
+
+parser.add_argument('--use_weight', action='store_true', default=False)
+
+parser.add_argument('--dfr_model', type=str, default='mlp', choices=['transformer', 'lstm', 'mlp'], help='dfr seq2seq model type')
+parser.add_argument("--lr_seq2seq", type=float, default=1e-4, help="Learning rate for seq2seq")
+parser.add_argument('--embedding_dim', type=int, default=128, help='embedding dimension')
+parser.add_argument('--hidden_dim', type=int, default=128, help='hidden dimension')
+parser.add_argument('--decoder_depth', type=int, default=2, help='decoder depth')
+parser.add_argument("--momentum_dfr", type=float, default=0, help="momentum for surrogate")
+# useful hyper-parameter
+parser.add_argument("--temperature", type=float, default=0.3, help="temperature for surrogate")
+parser.add_argument("--loss_w1", type=float, default=1e1, help="weight for contrastive loss")
+parser.add_argument("--loss_w2", type=float, default=1e2, help="weight for uniformity loss")
+parser.add_argument("--loss_w3", type=float, default=1e-2, help="weight for smooth loss")
+parser.add_argument("--n", type=int, default=2000, help="number of uniformity points")
+parser.add_argument("--warmup", type=int, default=0, help="number of warmup epochs for surrogate")
+parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 parser.set_defaults(augment=True)
 args, unknown = parser.parse_known_args()
 
+
 args.start_epoch, args.best_loss = 0, 1e5
+
 
 if len(args.store_name):
     args.store_name = f'_{args.store_name}'
+
+# dfr
+if args.dfr:
+    args.store_name += f'_DFR_{args.dfr_model}_{args.embedding_dim}_{args.lr_seq2seq}_{args.decoder_depth}_{args.warmup}_{args.loss_w1}_{args.loss_w2}_{args.loss_w3}_{args.momentum_dfr}_{args.temperature}_{args.n}_{"use_weight" if args.use_weight else ""}'
+
 if not args.lds and args.reweight != 'none':
     args.store_name += f'_{args.reweight}'
-
-if args.conr:
-    args.store_name += f'_ConR_{args.beta}_w={args.w}'
-    
 if args.lds:
-    args.store_name += f'_lds'
+    args.store_name += f'_lds_{args.lds_kernel[:3]}_{args.lds_ks}'
+    if args.lds_kernel in ['gaussian', 'laplace']:
+        args.store_name += f'_{args.lds_sigma}'
 if args.fds:
-    args.store_name += f'_fds'
+    args.store_name += f'_fds_{args.fds_kernel[:3]}_{args.fds_ks}'
+    if args.fds_kernel in ['gaussian', 'laplace']:
+        args.store_name += f'_{args.fds_sigma}'
+    args.store_name += f'_{args.start_update}_{args.start_smooth}_{args.fds_mmt}'
 if args.retrain_fc:
-    args.store_name += f'_RRT'
+    args.store_name += f'_retrain_fc'
 if args.regularization_weight > 0:
-    args.store_name += f'_reg'
+    args.store_name += f'_reg{args.regularization_weight}_il{args.interpolation_lambda}'
+args.store_name = f"{args.dataset}_{args.model}{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
 
-args.store_name = f"{args.store_name}_{args.lr}_{args.batch_size}"
-
-timestamp = str(datetime.datetime.now())
-timestamp = '-'.join(timestamp.split(' '))
-args.store_name = args.store_name + '_' + timestamp
+# timestamp = str(datetime.datetime.now())
+# timestamp = '-'.join(timestamp.split(' '))
+# args.store_name = args.store_name + '_' + timestamp
 
 prepare_folders(args)
 
@@ -139,10 +160,26 @@ print(f"Args: {args}")
 print(f"Store name: {args.store_name}")
 
 
+
+def seed_everything(seed):
+    # PyTorch
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # Numpy module.
+    random.seed(seed)  # Python random module.
+
+    # Ensure that the operations are deterministic on GPU (if using CUDA)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.autograd.set_detect_anomaly(True)
+
+# seed everything
+seed_everything(args.seed)
+
 def main():
     if args.gpu is not None:
         print(f"Use GPU: {args.gpu} for training")
-
 
     # Data
     print('=====> Preparing data...')
@@ -171,8 +208,28 @@ def main():
     model = resnet50(fds=args.fds, bucket_num=args.bucket_num, bucket_start=args.bucket_start,
                      start_update=args.start_update, start_smooth=args.start_smooth,
                      kernel=args.fds_kernel, ks=args.fds_ks, sigma=args.fds_sigma, momentum=args.fds_mmt,
-                     return_features=(args.regularization_weight > 0))
-    model = torch.nn.DataParallel(model,device_ids=[0, 1, 2,3]).cuda()
+                     return_features=(args.regularization_weight > 0 or args.dfr), feature_dim=args.embedding_dim)
+    
+    model = torch.nn.DataParallel(model).cuda()
+
+    if args.dfr:
+        if args.dfr_model == 'mlp':
+            if args.decoder_depth == 1:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim)).cuda()
+            elif args.decoder_depth == 2:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim)).cuda()
+            elif args.decoder_depth == 3:
+                seq2seq = nn.Sequential(nn.Linear(args.embedding_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim),
+                                        nn.ReLU(),
+                                        nn.Linear(args.hidden_dim, args.hidden_dim),).cuda()
+        else:
+            raise NotImplementedError(f"Model {dfr.model} not implemented")
+    else:
+        seq2seq = None
 
     # evaluate only
     if args.evaluate:
@@ -192,8 +249,20 @@ def main():
 
     # Loss and optimizer
     if not args.retrain_fc:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
-            torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        if args.dfr:
+            if args.optimizer == 'adam':
+                    optimizer = torch.optim.Adam([
+                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
+                    {'params': model.parameters(), 'lr': args.lr}
+                ])
+            else:
+                optimizer = torch.optim.SGD([
+                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
+                    {'params': model.parameters(), 'lr': args.lr}
+                ], momentum=args.momentum, weight_decay=args.weight_decay)
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
+                torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     else:
         # optimize only the last linear layer
         parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
@@ -221,30 +290,33 @@ def main():
                 torch.load(args.resume, map_location=torch.device(f'cuda:{str(args.gpu)}'))
             args.start_epoch = checkpoint['epoch']
             args.best_loss = checkpoint['best_loss']
-            model.load_state_dict(checkpoint['state_dict'])
+            model.load_state_dict(checkpoint['state_dict'], strict=False)
             optimizer.load_state_dict(checkpoint['optimizer'])
             print(f"===> Loaded checkpoint '{args.resume}' (Epoch [{checkpoint['epoch']}])")
         else:
             print(f"===> No checkpoint found at '{args.resume}'")
 
     cudnn.benchmark = True
-
+    
+    # create surrogate
+    if args.dfr:
+        # surrogate = Surrogate(num_labels=102, feature_dim=args.embedding_dim, momentum=args.momentum_dfr).cuda()
+        surrogate = None
+        points = generate_gaussian_vectors(args.n, args.embedding_dim).cuda()
+    else:
+        surrogate = None
+        points = None
     for epoch in range(args.start_epoch, args.epoch):
         adjust_learning_rate(optimizer, epoch, args)
-        train_loss,l_c = train(train_loader, model, optimizer, epoch)
-        val_loss_mse, val_loss_l1, val_loss_gmean,v_shot_dict = validate(val_loader, model, train_labels=train_labels)
-
-        v_few = v_shot_dict['low']['l1']
-        v_med = v_shot_dict['median']['l1']
-        v_many = v_shot_dict['many']['l1']
+        if args.dfr:
+            train_loss, train_loss_uni, train_loss_con, train_loss_smo = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
+        else:
+            train_loss, _ = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
+        val_loss_mse, val_loss_l1, val_loss_gmean = validate(val_loader, model, train_labels=train_labels)
 
         loss_metric = val_loss_mse if args.loss == 'mse' else val_loss_l1
-        is_best = loss_metric < args.best_loss
+        is_best = (loss_metric < args.best_loss) and (epoch >= args.warmup)
         args.best_loss = min(loss_metric, args.best_loss)
-
-
-
-
         print(f"Best {'L1' if 'l1' in args.loss else 'MSE'} Loss: {args.best_loss:.3f}")
         save_checkpoint(args, {
             'epoch': epoch + 1,
@@ -266,66 +338,53 @@ def main():
     print(f"Test loss: MSE [{test_loss_mse:.4f}], L1 [{test_loss_l1:.4f}], G-Mean [{test_loss_gmean:.4f}]\nDone")
 
 
-def train(train_loader, model, optimizer, epoch):
+def train(train_loader, model, optimizer, epoch, surrogate=None, seq2seq=None, points=None):
     batch_time = AverageMeter('Time', ':6.2f')
     data_time = AverageMeter('Data', ':6.4f')
     losses = AverageMeter(f'Loss ({args.loss.upper()})', ':.3f')
-    
-    if args.conr:
-        loss_c = AverageMeter("Loss(ConR)", ":.3f")
-        progress = ProgressMeter(
-            len(train_loader),
-            [batch_time, data_time, losses,loss_c],
-            prefix="Epoch: [{}]".format(epoch)
-        )
-    else:
-        progress = ProgressMeter(
-            len(train_loader),
-            [batch_time, data_time, losses],
-            prefix="Epoch: [{}]".format(epoch)
-        )
+    losses_uni = AverageMeter('Loss (Uniformity)', ':.3f')
+    losses_con = AverageMeter('Loss (Contrastive)', ':.3f')
+    losses_smo = AverageMeter('Loss (Smooth)', ':.3f')
+    progress = ProgressMeter(
+        len(train_loader),
+        [batch_time, data_time, losses, losses_uni, losses_con, losses_smo],
+        prefix="Epoch: [{}]".format(epoch)
+    )
 
     model.train()
     end = time.time()
-    
-    
-    for idx, (inputs, imgs_c, targets, weights) in enumerate(train_loader):
-    # for idx, (inputs, targets, weights) in enumerate(train_loader):
+    for idx, (inputs, targets, weights) in enumerate(train_loader):
         data_time.update(time.time() - end)
-        inputs, targets, weights = \
-            inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
-        
-        imgs_c[0] = imgs_c[0].cuda(args.gpu, non_blocking=True)
-        imgs_c[1] = imgs_c[1].cuda(args.gpu, non_blocking=True)
-        imgs_c = torch.cat(( imgs_c[0],  imgs_c[1]), dim=0)
-        targets_c = torch.cat(( targets,  targets), dim=0)
-        weights_c = torch.cat(( weights,  weights), dim=0)
+        inputs, targets, weights = inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
 
-        outputs_c, features_c = model(imgs_c, targets=targets_c, epoch=epoch,reg=False)
-        outputs, features = model(inputs, targets, epoch)
+        if args.regularization_weight > 0 or args.dfr:
+            outputs, features = model(inputs, targets, epoch)
+        elif args.fds:
+            outputs, _ = model(inputs, targets, epoch)
+        else:
+            outputs = model(inputs, targets, epoch)
 
-        
         loss = globals()[f"weighted_{args.loss}_loss"](outputs, targets, weights)
-        
-        if args.conr:
-            l_c= ConR(features_c,targets_c,outputs_c.clone().detach(),w=args.w,weights =weights_c,t=args.t,e=args.e)
-            loss+=args.beta*l_c
-            loss_c.update(l_c.item(), inputs[0].size(0))
+        losses.update(loss.item(), inputs.size(0))
 
-
+        # ranksim regularization
         if args.regularization_weight > 0:
             loss += (args.regularization_weight * batchwise_ranking_regularizer(features, targets, 
                 args.interpolation_lambda))
+
+        if args.dfr and epoch >= args.warmup:
+            # loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs.squeeze(1), targets.squeeze(1).long(), range(102), seq2seq, surrogate, points, args.temperature)
+            # if args.dfr_simple:
+            #     loss_reg, loss_con, loss_uni, loss_smo = dfr_simple2(features, targets.squeeze(1).long(), points, range(102), model.module.FDS.running_mean_last_epoch, args.temperature)
+            # else:
+            loss_reg, loss_con, loss_uni, loss_smo = dfr_simple(features, targets.squeeze(1).long(), points, range(187), model.module.FDS.running_mean_last_epoch, args.temperature, args.use_weight)
+            loss += (args.loss_w1 * loss_con + args.loss_w2 * loss_uni + args.loss_w3 * loss_smo)
+
+            losses_uni.update(loss_uni.item(), inputs.size(0))
+            losses_con.update(loss_con.item(), inputs.size(0))
+            losses_smo.update(loss_smo.item(), inputs.size(0))
+
         assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
-
-        losses.update(loss.item(), inputs.size(0))
-        
-
-
-
-        if args.conr:
-            loss  +=  args.beta* l_c
-        # tot_loss = 4*lamb*loss + 4*(1-lamb)*l_c
 
         optimizer.zero_grad()
         loss.backward()
@@ -340,7 +399,7 @@ def train(train_loader, model, optimizer, epoch):
         print(f"Create Epoch [{epoch}] features of all training data...")
         encodings, labels = [], []
         with torch.no_grad():
-            for (inputs, _, targets, _) in tqdm(train_loader):
+            for (inputs, targets, _) in tqdm(train_loader):
                 inputs = inputs.cuda(non_blocking=True)
                 outputs, feature = model(inputs, targets, epoch)
                 encodings.extend(feature.data.squeeze().cpu().numpy())
@@ -350,7 +409,7 @@ def train(train_loader, model, optimizer, epoch):
         model.module.FDS.update_last_epoch_stats(epoch)
         model.module.FDS.update_running_stats(encodings, labels, epoch)
 
-    return losses.avg,l_c
+    return losses.avg, losses_uni.avg, losses_con.avg, losses_smo.avg
 
 
 def validate(val_loader, model, train_labels=None, prefix='Val'):
@@ -372,10 +431,9 @@ def validate(val_loader, model, train_labels=None, prefix='Val'):
     preds, labels = [], []
     with torch.no_grad():
         end = time.time()
-        
-        for idx, (inputs,targets) in enumerate(val_loader):
+        for idx, (inputs, targets, _) in enumerate(val_loader):
             inputs, targets = inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True)
-            outputs,_ = model(inputs)
+            outputs = model(inputs)
 
             preds.extend(outputs.data.cpu().numpy())
             labels.extend(targets.data.cpu().numpy())
@@ -403,7 +461,7 @@ def validate(val_loader, model, train_labels=None, prefix='Val'):
         print(f" * Low: MSE {shot_dict['low']['mse']:.3f}\t"
               f"L1 {shot_dict['low']['l1']:.3f}\tG-Mean {shot_dict['low']['gmean']:.3f}")
 
-    return losses_mse.avg, losses_l1.avg, loss_gmean,shot_dict
+    return losses_mse.avg, losses_l1.avg, loss_gmean
 
 
 def shot_metrics(preds, labels, train_labels, many_shot_thr=100, low_shot_thr=20):

@@ -1,16 +1,8 @@
-# Copyright (c) 2023-present, Royal Bank of Canada.
-# Copyright (c) 2021-present, Yuzhe Yang
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-#
 ########################################################################################
 # Code is based on the LDS and FDS (https://arxiv.org/pdf/2102.09554.pdf) implementation
 # from https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir 
 # by Yuzhe Yang et al.
 ########################################################################################
-
 import os
 import shutil
 import torch
@@ -136,9 +128,3 @@ def get_lds_kernel_window(kernel, ks, sigma):
         kernel_window = list(map(laplace, np.arange(-half_ks, half_ks + 1))) / max(map(laplace, np.arange(-half_ks, half_ks + 1)))
 
     return kernel_window
-
-
-
-def get_lambda(epoch, max_epoch):
-    p = epoch / max_epoch
-    return 2. / (1+np.exp(-10.*p)) - 1.

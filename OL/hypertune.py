@@ -14,15 +14,17 @@ def seed_everything(seed=2024):
 
 def objective(trial):
 
-    w1 = trial.suggest_categorical('w1', [1e-4, 5e-3, 1e-3, 5e-2, 1e-2, 5e-1, 1e-1, 5e-1, 1e-0])
-    w2 = trial.suggest_categorical('w2', [1e-4, 5e-3, 1e-3, 5e-2, 1e-2, 5e-1, 1e-1, 5e-1, 1e-0])
-    w3 = trial.suggest_categorical('w2', [1e-4, 5e-3, 1e-3, 5e-2, 1e-2, 5e-1, 1e-1, 5e-1, 1e-0])
+    w1 = trial.suggest_categorical('w1', [0, 1e-4, 5e-3, 1e-3, 5e-2, 1e-2])
+    w2 = trial.suggest_categorical('w2', [0, 1e-4, 5e-3, 1e-3, 5e-2, 1e-2])
+    w3 = trial.suggest_categorical('w3', [0, 1e-4, 5e-3, 1e-3, 5e-2, 1e-2])
     temp = trial.suggest_categorical('temp', [0.07, 0.1, 0.3, 0.5, 1.0, 2.0])
     
     seed_everything(seed=2024)
     kwargs = {'w1': w1, 'w2': w2, 'w3': w3, 'temp': temp}
-
-    test_mse, test_std = main(Linear=True, oe=False, dir=True, dfr=True, print_performance=False, kwargs=kwargs)
+    args  = {'linear': True, 'dir': True, 'dfr': True, 'oe': False, 'print_performance': False, 'times':1}
+    # make args to namespaced object
+    args = type('args', (object,), args)
+    test_mse, test_std = main(args, kwargs=kwargs)
     return test_mse
 
 if __name__ == "__main__":

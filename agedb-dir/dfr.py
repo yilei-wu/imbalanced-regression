@@ -87,7 +87,7 @@ def uniformity_loss(embeddings, points):
 
     return 1 - average_max_similarity
 
-def smooth_loss(embeddings, alpha=1.0, beta=0.1):
+def smooth_loss(embeddings, alpha=-1.0, beta=0.1):
     # Calculating the smoothness term
     embeddings = F.normalize(embeddings, dim=1)
     lengths = torch.matmul(embeddings[1:], embeddings[:-1].T)

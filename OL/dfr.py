@@ -85,7 +85,12 @@ def regression_contrastive_loss(embeddings, labels, surrogates, temperature=0.1,
     similarities /= temperature
 
     mask = torch.zeros_like(similarities).to(similarities.device)
-    label_range_temp = torch.tensor(np.linspace(-1.8, 1.8, 100)).cuda() 
+
+    if labels.max() > 1.25:
+        label_range_temp = torch.tensor(np.linspace(-2.8, 2.8, 100)).cuda()
+    else:
+        label_range_temp = torch.tensor(np.linspace(0, 1.25, 100)).cuda()  
+        
     label_range_temp = label_range_temp.unsqueeze(1)
     labels = labels.unsqueeze(0)
     label_ind = torch.argmin(torch.abs(labels.detach().cpu() - label_range_temp.cpu().unsqueeze(0)), dim=1)

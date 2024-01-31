@@ -88,10 +88,10 @@ class MLP(nn.Module):
         pred = self.regression_layer(features)
         return pred, features
 
-def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kwargs=None):
-    if Linear:
+def main(args, kwargs=None):
+    if args.linear:
         m = 100
-        lr = 1e-3
+        lr = 1e-4
         epochs = 20000
         dataset_train = "train.npz"
         dataset_test = "test.npz"
@@ -101,7 +101,7 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
     else:
         m = 240
         lr = 1e-3
-        epochs = 50000
+        epochs = 40000
         dataset_train = "train_sde.npz"
         dataset_test = "test_sde.npz"
         Lambda_d = 1e-3
@@ -111,7 +111,7 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
 
     d = np.load(dataset_train)
     X_train, y_train = (d["X_train0"], d["X_train1"]), d["y_train"]
-    if dir:
+    if args.dir:
         X_train1, indices = DIR(X_train[1], 0.6)
         X_train0 = X_train[0][indices]
         X_train = (X_train0, X_train1)
@@ -126,9 +126,15 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
     X_test = Variable(torch.from_numpy(X_test), requires_grad=True).float().cuda()
     y_test = Variable(torch.from_numpy(y_test), requires_grad=True).float().cuda()
 
+    # print("min and max of y_test:", torch.min(y_test), torch.max(y_test))
+
     mse_loss = nn.MSELoss().cuda()
-    points = generate_gaussian_vectors(1000, m).cuda()
-    label_range = torch.tensor(np.linspace(-1.8, 1.8, m)).cuda()  
+    points = generate_gaussian_vectors(1000, 100).cuda()
+    if args.linear:
+        label_range = torch.tensor(np.linspace(-2.8, 2.8, 100)).cuda()
+    else:
+        label_range = torch.tensor(np.linspace(0, 1.25, 100)).cuda()  
+
     surrogate = torch.rand(len(label_range), 100).cuda()
 
     l_train = []
@@ -149,7 +155,7 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
             pred, feature = model(X_train_small)
             loss = mse_loss(pred, y_train_small)
 
-            if oe:
+            if args.oe:
                 loss_oe = ordinal_entropy(feature, y_train_small) * Lambda_d
             else:
                 loss_oe = loss * 0
@@ -162,7 +168,7 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
                 ind = torch.argmin(torch.abs(i - label_range)).long()
                 surrogate[ind] = running_mean[j]                    
         
-            if dfr:
+            if args.dfr:
                 loss_reg, loss_con, loss_uni, loss_smo = dfr_simple(feature, y_train_small, points.cuda(), label_range, surrogate, temperature=kwargs['temp'], use_weight=False)
             else:
                 loss_reg, loss_con, loss_uni, loss_smo = loss * 0, loss * 0, loss * 0, loss * 0
@@ -178,19 +184,20 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
                 model.eval()
                 pred, feature = model(X_test)
                 loss_test = mse_loss(pred, y_test)
-                # if print_performance:
-                #     print('{0}, Epoch: [{1}]\t'
-                #         'Loss_train: [{loss:.2e}]\t'
-                #         'Loss_test: [{loss_test:.2e}]\t'
-                #         'Loss_con: [{loss_con:.2e}]\t'
-                #         'Loss_uni: [{loss_uni:.2e}]\t'
-                #         'Loss_smo: [{loss_smo:.2e}]\t'.format(description, epoch, loss=loss.data, loss_test=loss_test.data, loss_con=loss_con.data, loss_uni=loss_uni.data, loss_smo=loss_smo.data))
+                if args.print_performance:
+                    print('{0}, Epoch: [{1}]\t'
+                        'Loss_train: [{loss:.2e}]\t'
+                        'Loss_test: [{loss_test:.2e}]\t'
+                        'Loss_con: [{loss_con:.2e}]\t'
+                        'Loss_uni: [{loss_uni:.2e}]\t'
+                        'Loss_smo: [{loss_smo:.2e}]\t'.format(description, epoch, loss=loss.data, loss_test=loss_test.data, loss_con=loss_con.data, loss_uni=loss_uni.data, loss_smo=loss_smo.data))
 
                 if loss_test < _mse_test:
                     _mse_test = loss_test
                     _mse_train = loss
-                    # if print_performance:
-                    #     print('best model, Loss_test: [{loss_test:.2e}]'.format(loss_test=_mse_test.data))
+                    model_weight = model.state_dict()
+                    if args.print_performance:
+                        print('best model, Loss_test: [{loss_test:.2e}]'.format(loss_test=_mse_test.data))
 
         l_test.append(_mse_test.cpu().detach().numpy())
         l_train.append(_mse_train.cpu().detach().numpy())
@@ -202,12 +209,16 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
     train_dict = {}
     train_dict['train_mse'] = l_train
     train_dict['test_mse'] = l_test
-    if Linear:
+    if args.linear:
         path = './Linear.mat'
     else:
         path = './nonlinear.mat'
     scio.savemat(path, train_dict)
 
+    # evaluate the performance on the test set
+    model = MLP(m).cuda()
+    model.eval()
+    model.load_state_dict(model_weight)
     preds = model(X_test)[0].detach().cpu().numpy()
     labels = y_test.detach().cpu().numpy()
 
@@ -216,7 +227,7 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
     median_shot_ind = np.where(((x_test1 > 0.1) & (x_test1 < 0.2)) | ((x_test1 > 0.8) & (x_test1 < 0.9)))[0]
     low_shot_ind = np.where((x_test1 < 0.1) | (x_test1 > 0.9))[0]
 
-    if print_performance:
+    if args.print_performance:
         shot_dict = shot_metrics(preds, labels, many_shot_ind, median_shot_ind, low_shot_ind)
         print(f" * All: MSE {shot_dict['all']['mse']:.5f}\t" f"L1 {shot_dict['all']['l1']:.5f}\tG-Mean {shot_dict['all']['gmean']:.5f}")
         print(f" * Many: MSE {shot_dict['many']['mse']:.5f}\t"f"L1 {shot_dict['many']['l1']:.5f}\tG-Mean {shot_dict['many']['gmean']:.5f}")
@@ -226,13 +237,23 @@ def main(Linear=True, oe=True, dir=False, dfr=False, print_performance=False, kw
     return np.mean(l_test), np.std(l_test)
 
 if __name__ == "__main__":
-    Linear = True  # choose the Linear/nonlinear task, i.e. True=Linear, False=nonlinear
-    dir = True 
-    oe = False  # using the ordinal entropy or not
-    dfr = False  # using the DFR or not
-    print_performance = True
-    kwargs = {'w1': 0.0001, 'w2': 0.0001, 'w3': 0.0001, 'temp': 0.5}
+    import argparse
+    parser = argparse.ArgumentParser()
+    # choose the Linear/nonlinear task, i.e. True=Linear, False=nonlinear
+    parser.add_argument('--linear', default=True, action='store_false')
+    parser.add_argument('--dir', default=True, action='store_false')
+    parser.add_argument('--dfr', default=False, action='store_true')
+    parser.add_argument('--oe',  default=False, action='store_true')
+    parser.add_argument('--print_performance', default=False, action='store_true')
+    parser.add_argument('--times', default=1, type=int)
 
-    for i in range(10):
-        seed_everything(seed=i)
-        main(Linear, oe, dir, dfr, print_performance, kwargs)
+    args = parser.parse_args()
+    print_performance = True
+    if args.linear:
+        kwargs = {'w1': 0.0001, 'w2': 0.0001, 'w3': 0.0001, 'temp': 1.0}
+    else:
+        kwargs = {'w1': 0.000, 'w2': 0.0001, 'w3': 0.0001, 'temp': 0.1}
+    
+    # for i in range(args.times):
+    #     seed_everything(seed=i)
+    main(args, kwargs)

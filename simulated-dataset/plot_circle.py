@@ -1,6 +1,6 @@
 from gaussian import Surrogate, generate_gaussian_vectors, uniformity_loss, smooth_loss, regression_contrastive_loss, compute_cross_entropy, get_centroid, complete_centroid, dfr
 from uci_dataset.dataset import get_airfoildataset, get_concretedataset, get_housingdataset, get_abalonedataset, get_bostondataset
-from uci_dataset.plot import visualize_model_performance, visualize_tsne, visualize_circle
+from uci_dataset.plot import visualize_model_performance, visualize_tsne
 from lds import apply_label_density_smoothing, weighted_mae_loss
 from fds import FDS
 from ranksim import batchwise_ranking_regularizer
@@ -25,11 +25,6 @@ def train(args):
 
     if args.dataset == "airfoil":
         train_dataset, test_dataset = get_airfoildataset(1)
-        if args.single_side:
-            train_dataset.X = train_dataset.X[train_dataset.Y <= 25]
-            train_dataset.Y = train_dataset.Y[train_dataset.Y <= 25]
-            test_dataset.X = test_dataset.X[test_dataset.Y <= 25]
-            test_dataset.Y = test_dataset.Y[test_dataset.Y <= 25]
     elif args.dataset == "concrete":
         train_dataset, test_dataset = get_concretedataset(1)
     elif args.dataset == "housing":
@@ -156,8 +151,7 @@ def train(args):
     mse_te = F.mse_loss(y_hat_te, y_te).item()
     mae_te = F.l1_loss(y_hat_te, y_te).item()
         
-    # print(f"Test Set MSE: {mse_te}, MAE {mae_te}")
-    print("Test Set MSE: %s, MAE %s" % (mse_te, mae_te))
+    print(f"Test Set MSE: {mse_te}, MAE {mae_te}") 
     shot_metrics(y_hat_te, y_te, save_labels[0].cpu().numpy())
 
     # all train labels 
@@ -169,9 +163,8 @@ def train(args):
     print(labels_te.min(), labels_te.max())
     
     if args.visualize:
-        visualize_model_performance(saved_features, save_labels, feat_te, labels_te, labels, y_hat_te, args.path_to_save_figures)
-        # visualize_tsne(saved_features, save_labels, args.path_to_save_figures)
-        visualize_circle(saved_features, save_labels,  feat_te, labels_te, args.path_to_save_figures)
+        # visualize_model_performance(saved_features, save_labels, feat_te, labels_te, labels, y_hat_te, args.path_to_save_figures)
+        visualize_tsne(saved_features, save_labels, args.path_to_save_figures)
 
     return mse_te
 
@@ -270,9 +263,6 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, default="airfoil", help="Dataset name")
     parser.add_argument("--feature_dim", type=int, default=10, help="Feature dimension")
     parser.add_argument("--fold", type=int, default=1, help="Fold number")
-    # single side
-    parser.add_argument("--single_side", action="store_true", default=False, help="Whether to use single side")
-
     parser.add_argument("--print_freq", type=int, default=300, help="Print frequency")
     parser.add_argument("--seq2seq", type=str, default="mlp", choices=["mlp", "lstm", "vit"], help="seq2seq model")
 
@@ -319,20 +309,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
 
-    for seed in range(1, 50):
+    for seed in range(18, 50):
         args.seed = seed
         seed_everything(args.seed)    
-        combination = f"final_{args.dataset}-{args.fold}-{args.dfr}-{args.seed}{'_ranksim' if args.regularization_weight > 0 else ''}{'_tp' if args.fold == 6 else ''}f'_{args.feature_dim}'"
+        combination = f"{args.dataset}-{args.fold}-{args.dfr}-{args.seed}{'_ranksim' if args.regularization_weight > 0 else ''}{'_tp' if args.fold == 6 else ''}"
         args.path_to_save_figures = f"/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/simulated-dataset/{formatted_date}/{combination}/"
-
+    
         surrogate = train(args)
 
 
-# abalone momentum: 0.99, temperature: 0.5, loas_w1: 1.0, loas_w2: 0.5, loas_w3: 1.0, n: 10000, epochs: 200, batch_size: 64, lr: 0.001, lr_seq2seq: 1e-05
-# boston: momentum: 0.999, temperature: 2.0, loas_w1: 1.0, loas_w2: 0.01, loas_w3: 2.0, n: 2000, epochs: 500, batch_size: 256, lr: 0.005, lr_seq2seq: 1e-05
-# airfoil: momentum: 0.99, temperature: 2.0, loas_w1: 0.01, loas_w2: 0.4, n: 1000, epochs: 1000, batch_size: 16, lr: 0.0015203342762783406, lr_seq2seq: 0.003908374924919967
-# Housing: momentum: 0.99, temperature: 2.0, loas_w1: 5.0, loas_w2: 0.3, n: 1000, epochs: 2000, batch_size: 16, lr: 0.002168153791448437, lr_seq2seq: 0.00990383600238437
-    
-
-# python uci_tabular.py --visualize --dfr --seed 2030
-    

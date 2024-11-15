@@ -27,7 +27,7 @@ Please go into the sub-folder to run experiments for different datasets.
 
 - [IMDB-WIKI-DIR (age estimation)](./imdb-wiki-dir)
 - [AgeDB-DIR (age estimation)](./agedb-dir)
-- [STS-B-DIR (age estimation)](./sts-b-dir)
+- [STS-B-DIR (sentence similarity regression)](./sts-b-dir)
 - [OL-DIR (operater learning)](./OL)
 
 ---

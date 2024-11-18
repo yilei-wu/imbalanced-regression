@@ -1,4 +1,4 @@
-# Imbalanced Regression
+# Improve Representation for Imbalanced Regression through Geometric Constraints
 
 <div align="center">
 <img src="./SRL.png" width="800px" alt="Illustration of our geometric constraint-based approach"/>
@@ -10,7 +10,7 @@
 ---
 ## Usage
 
-Please go into the sub-folder to run experiments for different datasets. 
+Please navigate to the sub-folder to run experiments on different datasets. An example dataset is provided as follows.
 
 - [STS-B-DIR (sentence similarity regression)](./sts-b-dir)
 

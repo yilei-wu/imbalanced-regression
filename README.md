@@ -1,8 +1,8 @@
 <div align="center">
-<h1>🧶 Improving Representation for Imbalanced Regression <br> through Geometric Constraints </h1>
+<h1>🧶 Improve Representation for Imbalanced Regression <br> through Geometric Constraints </h1>
 </div>
 
-> **Improving Representation for Imbalanced Regression through Geometric Constraints _(CVPR 2025)_** <br>
+> **Improve Representation for Imbalanced Regression through Geometric Constraints _(CVPR 2025)_** <br>
 > Zijian Dong<sup>1*</sup>, Yilei Wu<sup>1*</sup>, Chongyao Chen<sup>2*</sup>, Yingtian Zou<sup>1</sup>, Yichi Zhang<sup>1</sup>, Juan Helen Zhou<sup>1</sup> <br>
 > <sup>1</sup>National University of Singapore, <sup>2</sup>Duke University, <sup>*</sup>Equal contribution
 > <a href=""><img src="https://img.shields.io/badge/Paper-Arxiv-darkred.svg" alt="Paper"></a>   

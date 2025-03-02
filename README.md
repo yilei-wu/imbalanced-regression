@@ -20,7 +20,7 @@ Please navigate to the sub-folder to run experiments on different datasets. An e
 ## Pretrained Weight
 
 - [STS-B-DIR (sentence similarity regression)](https://drive.google.com/file/d/1f1BJWWXNHZUoUBYcxQaFt7kslxzYX_7R/view?usp=sharing)
-- [IMDB-WIKI-DIR (age estimation)](https://drive.google.com/file/d/1yTlDQOpWFGIfhAl8nMZ2_tFE3n00FLrc/view?usp=drive_link)
+- [IMDB-WIKI-DIR (age estimation)](https://drive.google.com/file/d/1yTlDQOpWFGIfhAl8nMZ2_tFE3n00FLrc/view?usp=sharing)
 - [AgeDB-DIR (age estimation)](https://drive.google.com/file/d/1G5LWUVnT7cDf4h6wnbEwuwa_Hh6VQrkc/view?usp=drive_link)
 
 ---

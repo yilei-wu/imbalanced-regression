@@ -1,6 +1,3 @@
-The imbalanced regression is based on the public repository of [Yang et al., ICML 2021](https://github.com/YyzHarry/imbalanced-regression/tree/main/imdb-wiki-dir). 
-
-
 ## Installation
 
 #### Prerequisites
@@ -37,7 +34,7 @@ pip install overrides==3.1.0
 
 ## Getting Started
 
-### 1. running 
+#### Running 
 
 ```
 python train.py --dfr --w1 1e-4 --w2 1e-2 --w3 1e-4 --temp 0.1

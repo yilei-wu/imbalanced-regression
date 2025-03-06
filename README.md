@@ -19,7 +19,7 @@ Our paper addresses representation learning for imbalanced regression by introdu
 An example dataset is provided as follows.
 
 - [STS-B-DIR (sentence similarity regression)](./sts-b-dir)
-
+- [IMDB-WIKI-DIR (age estimation)](./imdb-wiki-dir)
 
 ## 💻 Pretrained Weights
 
@@ -45,6 +45,18 @@ imbalanced-regression/
 │   ├── trainer.py         # Training and evaluation pipelines
 │   ├── train.py           # Script to initiate the training process
 │   └── glue_data/         # Directory containing raw and preprocessed STS-B 
+├── imdb-wiki-dir/         # IMDB-WIKI dataset for age estimation
+│   ├── dataset.py         # Preprocessing and data preparation for IMDB-WIKI
+│   ├── data               # dataset directory
+│   ├── dfr.py             # Method implementation
+│   ├── loss.py            # 
+│   ├── resnet.py          # 
+│   ├── train.py           # Training and evaluation pipelines
+│   └── utils.py/          # Directory containing utility functions
+├── agedb-dir/             # AgeDB dataset for age estimation
+│   ├── train.py           # Training and evaluation pipelines
+│   └── utils.py/          # Directory containing utility functions
+
 ```
 
 ## 🧑🏻‍💻 Running (STS-B-DIR)
@@ -75,9 +87,18 @@ pip install -r requirements.txt
 pip install overrides==3.1.0
 ```
 
-4. running
+4. training
 ```
 python train.py --dfr --w1 1e-4 --w2 1e-2 --w3 1e-4 --temp 0.1
+```
+
+
+## 🧑🏻‍ Eevaluating 
+
+
+```
+python train.py --evaluate --pretrained <path_to_evaluation_ckpt>
+
 ```
 
 

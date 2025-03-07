@@ -118,5 +118,10 @@ If you find this repository useful in your research, please consider giving a st
 
 ```
 
-
+@inproceedings{dong2025improve,
+  title={Improve Representation for Imbalanced Regression through Geometric Constraints},
+  author={Dong, Zijian and Wu, Yilei and Chen, Chongyao and Zou, Yingtian and Zhang, Yichi and Zhou, Juan Helen},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2025}
+}
 ```

@@ -2,16 +2,17 @@
 <h1>🧶 Improving Representation for Imbalanced Regression <br> through Geometric Constraints </h1>
 </div>
 
-> **Improving Representation for Imbalanced Regression through Geometric Constraints _(CVPR 2025)_** <br>
-> Zijian Dong<sup>1*</sup>, Yilei Wu<sup>1*</sup>, Chongyao Chen<sup>2*</sup>, Yingtian Zou<sup>1</sup>, Yichi Zhang<sup>1</sup>, Juan Helen Zhou<sup>1</sup> <br>
-> <sup>1</sup>National University of Singapore, <sup>2</sup>Duke University, <sup>*</sup>Equal contribution
-> <a href=""><img src="https://img.shields.io/badge/Paper-Arxiv-darkred.svg" alt="Paper"></a>   
+> **Improving Representation for Imbalanced Regression through Geometric Constraints _(CVPR 2025)_** `<br>`
+> Zijian Dong`<sup>`1*`</sup>`, Yilei Wu`<sup>`1*`</sup>`, Chongyao Chen`<sup>`2*`</sup>`, Yingtian Zou`<sup>`1`</sup>`, Yichi Zhang`<sup>`1`</sup>`, Juan Helen Zhou`<sup>`1`</sup>` `<br>`
+> `<sup>`1`</sup>`National University of Singapore, `<sup>`2`</sup>`Duke University, `<sup>`*`</sup>`Equal contribution
+> `<a href=""><img src="https://img.shields.io/badge/Paper-Arxiv-darkred.svg" alt="Paper">``</a>`
 
 <div align="center">
 <img src="./SRL.png" width="800px" alt="Illustration of our geometric constraint-based approach"/>
 </div>
 
 ## 💡 Introduction
+
 Our paper addresses representation learning for imbalanced regression by introducing two geometric constraints: **enveloping loss**, which encourages representations to uniformly occupy a hypersphere's surface, and **homogeneity loss**, which ensures evenly spaced representations along a continuous trace. Unlike classification-based methods that cluster features into distinct groups, our approach preserves the continuous and ordered nature essential for regression tasks. We integrate these constraints into a **Surrogate-driven Representation Learning (SRL)** framework. Experiments on several datasets demonstrate significant performance improvements, especially in regions with limited data.
 
 ## 🔧 Usage
@@ -28,7 +29,6 @@ We provide our model weights trained on [DIR benchmark datasets](https://github.
 - [STS-B-DIR (sentence similarity regression)](https://drive.google.com/file/d/1f1BJWWXNHZUoUBYcxQaFt7kslxzYX_7R/view?usp=sharing)
 - [IMDB-WIKI-DIR (age estimation)](https://drive.google.com/file/d/1yTlDQOpWFGIfhAl8nMZ2_tFE3n00FLrc/view?usp=sharing)
 - [AgeDB-DIR (age estimation)](https://drive.google.com/file/d/1G5LWUVnT7cDf4h6wnbEwuwa_Hh6VQrkc/view?usp=drive_link)
-
 
 ## 📂 File Structure
 
@@ -88,20 +88,19 @@ pip install overrides==3.1.0
 ```
 
 4. training
+
 ```
 python train.py --dfr --w1 1e-4 --w2 1e-2 --w3 1e-4 --temp 0.1
 ```
 
-
-## 🧑🏻‍ Eevaluating 
-
+## 🧑🏻‍ Eevaluating
 
 ```
-python train.py --evaluate --pretrained <path_to_evaluation_ckpt>
+python train.py --evaluate --resume <path_to_evaluation_ckpt> #agedb-dir & imdb-wiki-dir
+ 
+python train.py --evaluate --eval_model <path_to_evaluation_ckpt> #sts-b-dir
 
 ```
-
-
 
 ---
 
@@ -111,9 +110,11 @@ Our codebase was built on [DIR](https://github.com/YyzHarry/imbalanced-regressio
 
 ---
 
-
 ## Citation
-If you find this repository useful in your research, please consider giving a star :star: and a citation:
+
+If you find this repository useful in your research, please consider giving a star ⭐️ and a citation:
+
 ```
 
 
+```

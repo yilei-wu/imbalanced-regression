@@ -11,11 +11,10 @@
 import time
 import argparse
 import logging
-from tqdm import tqdm
 import pandas as pd
+from tqdm import tqdm
 from scipy.stats import gmean
 from collections import defaultdict
-import datetime
 
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
@@ -23,17 +22,16 @@ from torch.utils.data import DataLoader
 
 from loss import *
 from utils import *
-from datasets import AgeDB
 from resnet import resnet50
 
-from ranksim import batchwise_ranking_regularizer
 from dfr import Surrogate, dfr, generate_gaussian_vectors, dfr_simple
-from oe import ordinal_entropy
 import random
+from datasets import IMDBWIKI
 
 import os
 os.environ["KMP_WARNINGS"] = "FALSE"
 
+from dfr import Surrogate, dfr
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 # imbalanced related
@@ -41,17 +39,17 @@ parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFo
 parser.add_argument('--lds', action='store_true', default=False, help='whether to enable LDS')
 parser.add_argument('--lds_kernel', type=str, default='gaussian',
                     choices=['gaussian', 'triang', 'laplace'], help='LDS kernel type')
-parser.add_argument('--lds_ks', type=int, default=9, help='LDS kernel size: should be odd number')
+parser.add_argument('--lds_ks', type=int, default=5, help='LDS kernel size: should be odd number')
 parser.add_argument('--lds_sigma', type=float, default=1, help='LDS gaussian/laplace kernel sigma')
 # FDS
 parser.add_argument('--fds', action='store_true', default=False, help='whether to enable FDS')
 parser.add_argument('--fds_kernel', type=str, default='gaussian',
                     choices=['gaussian', 'triang', 'laplace'], help='FDS kernel type')
-parser.add_argument('--fds_ks', type=int, default=9, help='FDS kernel size: should be odd number')
+parser.add_argument('--fds_ks', type=int, default=5, help='FDS kernel size: should be odd number')
 parser.add_argument('--fds_sigma', type=float, default=1, help='FDS gaussian/laplace kernel sigma')
 parser.add_argument('--start_update', type=int, default=0, help='which epoch to start FDS updating')
 parser.add_argument('--start_smooth', type=int, default=1000, help='which epoch to start using FDS to smooth features')
-parser.add_argument('--bucket_num', type=int, default=102, help='maximum bucket considered for FDS')
+parser.add_argument('--bucket_num', type=int, default=187, help='maximum bucket considered for FDS')
 parser.add_argument('--bucket_start', type=int, default=0, choices=[0, 3],
                     help='minimum(starting) bucket for FDS, 0 for IMDBWIKI, 3 for AgeDB')
 parser.add_argument('--fds_mmt', type=float, default=0.9, help='FDS momentum')
@@ -65,27 +63,24 @@ parser.add_argument('--retrain_fc', action='store_true', default=False, help='wh
 parser.add_argument('--regularization_weight', type=float, default=0, help='weight of the regularization term')
 parser.add_argument('--interpolation_lambda', type=float, default=1.0, help='interpolation strength')
 
-# ordinal entropy
-parser.add_argument('--oe', action='store_true', default=False, help='whether to enable ordinal entropy')
-
 # training/optimization related
-parser.add_argument('--dataset', type=str, default='agedb', choices=['imdb_wiki', 'agedb'], help='dataset name')
-parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir-conR/data', help='data directory')
+parser.add_argument('--dataset', type=str, default='imdb_wiki', choices=['imdb_wiki', 'agedb'], help='dataset name')
+parser.add_argument('--data_dir', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/MYOP/trial_1/data', help='data directory')
 parser.add_argument('--model', type=str, default='resnet50', help='model name')
-parser.add_argument('--store_root', type=str, default='/mnt/isilon/CSC4/HelenZhouLab/HZLHD1/Data4/Members/yileiwu/fragmented-regression/agedb-dir/checkpoint_ht3', help='root path for storing checkpoints, logs')
+parser.add_argument('--store_root', type=str, default='checkpoint', help='root path for storing checkpoints, logs')
 parser.add_argument('--store_name', type=str, default='', help='experiment store name')
 parser.add_argument('--gpu', type=int, default=None)
 parser.add_argument('--optimizer', type=str, default='adam', choices=['adam', 'sgd'], help='optimizer type')
 parser.add_argument('--loss', type=str, default='l1', choices=['mse', 'l1', 'focal_l1', 'focal_mse', 'huber'], help='training loss type')
-parser.add_argument('--lr', type=float, default=2.5e-4, help='initial learning rate')
-parser.add_argument('--epoch', type=int, default=120, help='number of epochs to train')
+parser.add_argument('--lr', type=float, default=1e-3, help='initial learning rate')
+parser.add_argument('--epoch', type=int, default=90, help='number of epochs to train')
 parser.add_argument('--momentum', type=float, default=0.9, help='optimizer momentum')
 parser.add_argument('--weight_decay', type=float, default=1e-4, help='optimizer weight decay')
 parser.add_argument('--schedule', type=int, nargs='*', default=[60, 80], help='lr schedule (when to drop lr by 10x)')
-parser.add_argument('--batch_size', type=int, default=64, help='batch size')
+parser.add_argument('--batch_size', type=int, default=256, help='batch size')
 parser.add_argument('--print_freq', type=int, default=10, help='logging frequency')
 parser.add_argument('--img_size', type=int, default=224, help='image size used in training')
-parser.add_argument('--workers', type=int, default=8, help='number of workers used in data loading')
+parser.add_argument('--workers', type=int, default=32, help='number of workers used in data loading')
 # checkpoints
 parser.add_argument('--resume', type=str, default='', help='checkpoint file path to resume training')
 parser.add_argument('--pretrained', type=str, default='', help='checkpoint file path to load backbone weights')
@@ -94,11 +89,8 @@ parser.add_argument('--evaluate', action='store_true', help='evaluate only flag'
 # DFR
 parser.add_argument('--dfr', action='store_true', default=False, help='whether to enable dfr')
 parser.add_argument('--dfr_simple', action='store_true', default=False, help='whether to use simplified dfr')
-parser.add_argument('--use_weight', action='store_true', default=False)
 
-parser.add_argument('--surrogate_contrast', action='store_true', default=False, help='whether to use surrogate')
-parser.add_argument('--surrogate_ranksim', action='store_true', default=False, help='whether to use surrogate')
-parser.add_argument('--unique_sampling', action='store_true', default=False, help='whether to use unique sampling')
+parser.add_argument('--use_weight', action='store_true', default=False)
 
 parser.add_argument('--dfr_model', type=str, default='mlp', choices=['transformer', 'lstm', 'mlp'], help='dfr seq2seq model type')
 parser.add_argument("--lr_seq2seq", type=float, default=1e-4, help="Learning rate for seq2seq")
@@ -112,7 +104,6 @@ parser.add_argument("--loss_w1", type=float, default=1e1, help="weight for contr
 parser.add_argument("--loss_w2", type=float, default=1e2, help="weight for uniformity loss")
 parser.add_argument("--loss_w3", type=float, default=1e-2, help="weight for smooth loss")
 parser.add_argument("--n", type=int, default=2000, help="number of uniformity points")
-
 parser.add_argument("--warmup", type=int, default=0, help="number of warmup epochs for surrogate")
 parser.add_argument("--seed", type=int, default=0, help="random seed")
 
@@ -121,6 +112,7 @@ args, unknown = parser.parse_known_args()
 
 
 args.start_epoch, args.best_loss = 0, 1e5
+
 
 if len(args.store_name):
     args.store_name = f'_{args.store_name}'
@@ -144,15 +136,8 @@ if args.retrain_fc:
     args.store_name += f'_retrain_fc'
 if args.regularization_weight > 0:
     args.store_name += f'_reg{args.regularization_weight}_il{args.interpolation_lambda}'
-
-if args.oe:
-    args.store_name += f'_oe'
-
 args.store_name = f"{args.dataset}_{args.model}{args.store_name}_{args.optimizer}_{args.loss}_{args.lr}_{args.batch_size}"
 
-# timestamp = str(datetime.datetime.now())
-# timestamp = '-'.join(timestamp.split(' '))
-# args.store_name = args.store_name + '_' + timestamp
 
 prepare_folders(args)
 
@@ -167,8 +152,6 @@ logging.basicConfig(
 print = logging.info
 print(f"Args: {args}")
 print(f"Store name: {args.store_name}")
-
-
 
 def seed_everything(seed):
     # PyTorch
@@ -197,19 +180,8 @@ def main():
     df_train, df_val, df_test = df[df['split'] == 'train'], df[df['split'] == 'val'], df[df['split'] == 'test']
     train_labels = df_train['age']
 
-    train_dataset = AgeDB(data_dir=args.data_dir, df=df_train, img_size=args.img_size, split='train',
-                          reweight=args.reweight, lds=args.lds, lds_kernel=args.lds_kernel, lds_ks=args.lds_ks, lds_sigma=args.lds_sigma)
-    val_dataset = AgeDB(data_dir=args.data_dir, df=df_val, img_size=args.img_size, split='val')
-    test_dataset = AgeDB(data_dir=args.data_dir, df=df_test, img_size=args.img_size, split='test')
-
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
-                              num_workers=args.workers, pin_memory=True, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
-                            num_workers=args.workers, pin_memory=True, drop_last=False)
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,
-                             num_workers=args.workers, pin_memory=True, drop_last=False)
-    print(f"Training data size: {len(train_dataset)}")
-    print(f"Validation data size: {len(val_dataset)}")
+    test_dataset = IMDBWIKI(data_dir=args.data_dir, df=df_test, img_size=args.img_size, split='test')
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,num_workers=args.workers, pin_memory=True, drop_last=False)
     print(f"Test data size: {len(test_dataset)}")
 
     # Model
@@ -217,7 +189,7 @@ def main():
     model = resnet50(fds=args.fds, bucket_num=args.bucket_num, bucket_start=args.bucket_start,
                      start_update=args.start_update, start_smooth=args.start_smooth,
                      kernel=args.fds_kernel, ks=args.fds_ks, sigma=args.fds_sigma, momentum=args.fds_mmt,
-                     return_features=(args.regularization_weight > 0 or args.dfr or args.oe), feature_dim=args.embedding_dim)
+                     return_features=(args.regularization_weight > 0 or args.dfr), feature_dim=args.embedding_dim)
     
     model = torch.nn.DataParallel(model).cuda()
 
@@ -248,188 +220,8 @@ def main():
         print(f"===> Checkpoint '{args.resume}' loaded (epoch [{checkpoint['epoch']}]), testing...")
         validate(test_loader, model, train_labels=train_labels, prefix='Test')
         return
-
-    if args.retrain_fc:
-        assert args.reweight != 'none' and args.pretrained
-        print('===> Retrain last regression layer only!')
-        for name, param in model.named_parameters():
-            if 'fc' not in name and 'linear' not in name:
-                param.requires_grad = False
-
-    # Loss and optimizer
-    if not args.retrain_fc:
-        if args.dfr:
-            if args.optimizer == 'adam':
-                    optimizer = torch.optim.Adam([
-                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
-                    {'params': model.parameters(), 'lr': args.lr}
-                ])
-            else:
-                optimizer = torch.optim.SGD([
-                    {'params': seq2seq.parameters(), 'lr': args.lr_seq2seq},
-                    {'params': model.parameters(), 'lr': args.lr}
-                ], momentum=args.momentum, weight_decay=args.weight_decay)
-        else:
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr) if args.optimizer == 'adam' else \
-                torch.optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-    else:
-        # optimize only the last linear layer
-        parameters = list(filter(lambda p: p.requires_grad, model.parameters()))
-        names = list(filter(lambda k: k is not None, [k if v.requires_grad else None for k, v in model.module.named_parameters()]))
-        assert 1 <= len(parameters) <= 2  # fc.weight, fc.bias
-        print(f'===> Only optimize parameters: {names}')
-        optimizer = torch.optim.Adam(parameters, lr=args.lr) if args.optimizer == 'adam' else \
-            torch.optim.SGD(parameters, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
-
-    if args.pretrained:
-        checkpoint = torch.load(args.pretrained, map_location="cpu")
-        from collections import OrderedDict
-        new_state_dict = OrderedDict()
-        for k, v in checkpoint['state_dict'].items():
-            if 'linear' not in k and 'fc' not in k:
-                new_state_dict[k] = v
-        model.load_state_dict(new_state_dict, strict=False)
-        print(f'===> Pretrained weights found in total: [{len(list(new_state_dict.keys()))}]')
-        print(f'===> Pre-trained model loaded: {args.pretrained}')
-
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print(f"===> Loading checkpoint '{args.resume}'")
-            checkpoint = torch.load(args.resume) if args.gpu is None else \
-                torch.load(args.resume, map_location=torch.device(f'cuda:{str(args.gpu)}'))
-            args.start_epoch = checkpoint['epoch']
-            args.best_loss = checkpoint['best_loss']
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print(f"===> Loaded checkpoint '{args.resume}' (Epoch [{checkpoint['epoch']}])")
-        else:
-            print(f"===> No checkpoint found at '{args.resume}'")
-
-    cudnn.benchmark = True
     
-    # create surrogate
-    if args.dfr:
-        # surrogate = Surrogate(num_labels=102, feature_dim=args.embedding_dim, momentum=args.momentum_dfr).cuda()
-        surrogate = None
-        points = generate_gaussian_vectors(args.n, args.embedding_dim).cuda()
-    else:
-        surrogate = None
-        points = None
-    for epoch in range(args.start_epoch, args.epoch):
-        adjust_learning_rate(optimizer, epoch, args)
-        # if args.dfr:
-        train_loss, train_loss_uni, train_loss_con, train_loss_smo = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
-        # else:
-            # train_loss, _ = train(train_loader, model, optimizer, epoch, surrogate, seq2seq, points)
-        
-        # val_loss_mse, val_loss_l1, val_loss_gmean = validate(val_loader, model, train_labels=train_labels)
-        val_loss_mse, val_loss_l1, val_loss_gmean = validate(val_loader, model, train_labels=train_labels)
-
-        loss_metric = val_loss_mse if args.loss == 'mse' else val_loss_l1
-        is_best = (loss_metric < args.best_loss) and (epoch >= args.warmup)
-        args.best_loss = min(loss_metric, args.best_loss)
-        print(f"Best {'L1' if 'l1' in args.loss else 'MSE'} Loss: {args.best_loss:.3f}")
-        save_checkpoint(args, {
-            'epoch': epoch + 1,
-            'model': args.model,
-            'best_loss': args.best_loss,
-            'state_dict': model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-        }, is_best)
-        print(f"Epoch #{epoch}: Train loss [{train_loss:.4f}]; "
-              f"Val loss: MSE [{val_loss_mse:.4f}], L1 [{val_loss_l1:.4f}], G-Mean [{val_loss_gmean:.4f}]")
-
-    # test with best checkpoint
-    print("=" * 120)
-    print("Test best model on testset...")
-    checkpoint = torch.load(f"{args.store_root}/{args.store_name}/ckpt.best.pth.tar")
-    model.load_state_dict(checkpoint['state_dict'])
-    print(f"Loaded best model, epoch {checkpoint['epoch']}, best val loss {checkpoint['best_loss']:.4f}")
-    test_loss_mse, test_loss_l1, test_loss_gmean = validate(test_loader, model, train_labels=train_labels, prefix='Test')
-    print(f"Test loss: MSE [{test_loss_mse:.4f}], L1 [{test_loss_l1:.4f}], G-Mean [{test_loss_gmean:.4f}]\nDone")
-
-
-def train(train_loader, model, optimizer, epoch, surrogate=None, seq2seq=None, points=None):
-    batch_time = AverageMeter('Time', ':6.2f')
-    data_time = AverageMeter('Data', ':6.4f')
-    losses = AverageMeter(f'Loss ({args.loss.upper()})', ':.3f')
-    losses_uni = AverageMeter('Loss (Uniformity)', ':.3f')
-    losses_con = AverageMeter('Loss (Contrastive)', ':.3f')
-    losses_smo = AverageMeter('Loss (Smooth)', ':.3f')
-    progress = ProgressMeter(
-        len(train_loader),
-        [batch_time, data_time, losses, losses_uni, losses_con, losses_smo],
-        prefix="Epoch: [{}]".format(epoch)
-    )
-
-    model.train()
-    end = time.time()
-
-    # if surrogate is not None:
-    #     surrogate.momentum = min(epoch / args.epoch, 0.6)
-    # print(f"The momentum of surrogate is {surrogate.momentum}")
-
-    for idx, (inputs, targets, weights) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-        inputs, targets, weights = inputs.cuda(non_blocking=True), targets.cuda(non_blocking=True), weights.cuda(non_blocking=True)
-
-        if args.regularization_weight > 0 or args.dfr or args.oe:
-            outputs, features = model(inputs, targets, epoch)
-        elif args.fds:
-            outputs, _ = model(inputs, targets, epoch)
-        else:
-            outputs = model(inputs, targets, epoch)
-
-        loss = globals()[f"weighted_{args.loss}_loss"](outputs, targets, weights)
-        losses.update(loss.item(), inputs.size(0))
-
-        # ranksim regularization
-        if args.regularization_weight > 0:
-            loss += (args.regularization_weight * batchwise_ranking_regularizer(features, targets, 
-                args.interpolation_lambda))
-
-        if args.oe:
-            loss += (0.001 * ordinal_entropy(outputs, targets))
-
-        if args.dfr and epoch >= args.warmup:
-            # loss_reg, loss_con, loss_uni, loss_smo = dfr(features, outputs.squeeze(1), targets.squeeze(1).long(), range(102), seq2seq, surrogate, points, args.temperature)
-            # if args.dfr_simple:
-            #     loss_reg, loss_con, loss_uni, loss_smo = dfr_simple2(features, targets.squeeze(1).long(), points, range(102), model.module.FDS.running_mean_last_epoch, args.temperature)
-            # else:
-            loss_reg, loss_con, loss_uni, loss_smo = dfr_simple(features, targets.squeeze(1).long(), points, range(102), model.module.FDS.running_mean_last_epoch, args.temperature, args.use_weight, args.surrogate_contrast, args.surrogate_ranksim)
-            loss += (args.loss_w1 * loss_con + args.loss_w2 * loss_uni + args.loss_w3 * loss_smo)
-
-            losses_uni.update(loss_uni.item(), inputs.size(0))
-            losses_con.update(loss_con.item(), inputs.size(0))
-            losses_smo.update(loss_smo.item(), inputs.size(0))
-
-        assert not (np.isnan(loss.item()) or loss.item() > 1e6), f"Loss explosion: {loss.item()}"
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        batch_time.update(time.time() - end)
-        end = time.time()
-        if idx % args.print_freq == 0:
-            progress.display(idx)
-
-    if args.fds and epoch >= args.start_update:
-        print(f"Create Epoch [{epoch}] features of all training data...")
-        encodings, labels = [], []
-        with torch.no_grad():
-            for (inputs, targets, _) in tqdm(train_loader):
-                inputs = inputs.cuda(non_blocking=True)
-                outputs, feature = model(inputs, targets, epoch)
-                encodings.extend(feature.data.squeeze().cpu().numpy())
-                labels.extend(targets.data.squeeze().cpu().numpy())
-
-        encodings, labels = torch.from_numpy(np.vstack(encodings)).cuda(), torch.from_numpy(np.hstack(labels)).cuda()
-        model.module.FDS.update_last_epoch_stats(epoch)
-        model.module.FDS.update_running_stats(encodings, labels, epoch)
-
-    return losses.avg, losses_uni.avg, losses_con.avg, losses_smo.avg
-
+    return 
 
 def validate(val_loader, model, train_labels=None, prefix='Val'):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -459,7 +251,7 @@ def validate(val_loader, model, train_labels=None, prefix='Val'):
 
             loss_mse = criterion_mse(outputs, targets)
             loss_l1 = criterion_l1(outputs, targets)
-            loss_all = criterion_gmean(outputs, targets)
+            loss_all = criterion_gmean(outputs, targets) + 1e-10
             losses_all.extend(loss_all.cpu().numpy())
 
             losses_mse.update(loss_mse.item(), inputs.size(0))

@@ -113,17 +113,17 @@ parser.add_argument("--seed", type=int, default=0, help="random seed")
 parser.set_defaults(augment=True)
 args, unknown = parser.parse_known_args()
 
-logging.root.handlers = []
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(message)s",
-    handlers=[
-        logging.FileHandler(os.path.join(args.store_root, args.store_name, 'training.log')),
-        logging.StreamHandler()
-    ])
-print = logging.info
-print(f"Args: {args}")
-print(f"Store name: {args.store_name}")
+# logging.root.handlers = []
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="%(asctime)s | %(message)s",
+#     handlers=[
+#         logging.FileHandler(os.path.join(args.store_root, args.store_name, 'training.log')),
+#         logging.StreamHandler()
+#     ])
+# print = logging.info
+# print(f"Args: {args}")
+# print(f"Store name: {args.store_name}")
 
 
 def seed_everything(seed):

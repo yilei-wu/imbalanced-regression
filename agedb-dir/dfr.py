@@ -14,7 +14,7 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from scipy.stats import vonmises
 from scipy.special import ive
 
-from ranksim import batchwise_ranking_regularizer
+# from ranksim import batchwise_ranking_regularizer
 
 class Surrogate(nn.Module):
 

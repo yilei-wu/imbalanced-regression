@@ -95,14 +95,16 @@ pip install overrides==3.1.0
 python train.py --dfr --w1 1e-4 --w2 1e-2 --w3 1e-4 --temp 0.1
 ```
 
-## 🧑🏻‍ Eevaluating
+## 🧑🏻‍ Evaluating
 
 ```
 python train.py --evaluate --resume <path_to_evaluation_ckpt> #agedb-dir & imdb-wiki-dir
- 
-python train.py --evaluate --eval_model <path_to_evaluation_ckpt> #sts-b-dir
 
 ```
+```
+python train.py --evaluate --eval_model <path_to_evaluation_ckpt> #sts-b-dir
+```
+
 
 ---
 
@@ -123,5 +125,4 @@ If you find this repository useful in your research, please consider giving a st
   booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
   year={2025}
 }
-
 ```

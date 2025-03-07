@@ -27,7 +27,7 @@ An example dataset is provided as follows.
 We provide our model weights trained on [DIR benchmark datasets](https://github.com/YyzHarry/imbalanced-regression):
 
 - [STS-B-DIR (sentence similarity regression)](https://drive.google.com/file/d/1f1BJWWXNHZUoUBYcxQaFt7kslxzYX_7R/view?usp=sharing)
-- [IMDB-WIKI-DIR (age estimation)](https://drive.google.com/file/d/1yTlDQOpWFGIfhAl8nMZ2_tFE3n00FLrc/view?usp=sharing)
+- [IMDB-WIKI-DIR (age estimation)](https://drive.google.com/file/d/1On0iPwRFT5dbtmel-G0mQnzmXya4eB33/view?usp=sharing)
 - [AgeDB-DIR (age estimation)](https://drive.google.com/file/d/1G5LWUVnT7cDf4h6wnbEwuwa_Hh6VQrkc/view?usp=drive_link)
 
 ## 📂 File Structure

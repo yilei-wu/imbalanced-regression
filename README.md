@@ -101,11 +101,11 @@ python train.py --dfr --w1 1e-4 --w2 1e-2 --w3 1e-4 --temp 0.1
 ## 🧑🏻‍ Evaluating
 
 ```
-python train.py --evaluate --resume <path_to_evaluation_ckpt> #agedb-dir & imdb-wiki-dir
+python evaluate.py --evaluate --resume <path_to_evaluation_ckpt> #agedb-dir & imdb-wiki-dir
 
 ```
 ```
-python train.py --evaluate --eval_model <path_to_evaluation_ckpt> #sts-b-dir
+python evaluate.py --evaluate --eval_model <path_to_evaluation_ckpt> #sts-b-dir
 ```
 
 

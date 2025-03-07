@@ -117,6 +117,11 @@ Our codebase was built on [DIR](https://github.com/YyzHarry/imbalanced-regressio
 If you find this repository useful in your research, please consider giving a star ⭐️ and a citation:
 
 ```
-
+@inproceedings{dong2025improve,
+  title={Improve Representation for Imbalanced Regression through Geometric Constraints},
+  author={Dong, Zijian and Wu, Yilei and Chen, Chongyao and Zou, Yingtian and Zhang, Yichi and Zhou, Juan Helen},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2025}
+}
 
 ```
